@@ -19,6 +19,9 @@ CREATE TABLE household_members (
   UNIQUE(household_id, user_id)
 );
 
+-- Thêm cột linked_roommate_id vào bảng household_members
+ALTER TABLE household_members ADD COLUMN IF NOT EXISTS linked_roommate_id UUID REFERENCES roommates(id) ON DELETE SET NULL;
+
 -- Rooms table
 CREATE TABLE rooms (
   id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
@@ -177,4 +180,3 @@ CREATE POLICY "Members can manage expense shares" ON expense_shares
       )
     )
   );
-

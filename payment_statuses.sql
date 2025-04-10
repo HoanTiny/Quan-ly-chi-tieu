@@ -28,4 +28,3 @@ CREATE POLICY "Members can manage payment statuses" ON payment_statuses
       SELECT household_id FROM household_members WHERE user_id = auth.uid()
     )
   );
-

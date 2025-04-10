@@ -42,4 +42,3 @@ export async function GET(request: Request) {
   // No code provided, redirect to home
   return NextResponse.redirect(new URL("/", request.url))
 }
-

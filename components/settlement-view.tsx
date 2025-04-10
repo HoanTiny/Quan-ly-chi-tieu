@@ -1,12 +1,26 @@
 "use client"
 
-import { useState, useEffect } from "react"
+import { useState, useEffect, useMemo } from "react"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { FileSpreadsheet, PlusCircle, Filter } from "lucide-react"
+import { FileSpreadsheet, PlusCircle, Filter, ChevronDown, ChevronUp, Search, X } from "lucide-react"
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+  DialogClose,
+} from "@/components/ui/dialog"
+import { DropdownMenu, DropdownMenuContent, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
+import { Badge } from "@/components/ui/badge"
+import { Input } from "@/components/ui/input"
+import { ScrollArea } from "@/components/ui/scroll-area"
+import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion"
 import type { Roommate, Expense } from "./expense-tracker"
 import { formatCurrency } from "@/lib/utils"
 import { createClient } from "@/lib/supabase/client"
@@ -41,6 +55,19 @@ interface DetailedTransaction {
   expenseId: string
   expenseDescription: string
   date: Date
+  sharedWith: string[]
+}
+
+interface GroupedTransaction {
+  description: string
+  transactions: DetailedTransaction[]
+  totalAmount: number
+}
+
+// Hàm làm tròn số tiền
+const roundAmount = (amount: number): number => {
+  // Làm tròn lên đến 1.000 gần nhất
+  return Math.ceil(amount / 1000) * 1000
 }
 
 export default function SettlementView({
@@ -57,6 +84,14 @@ export default function SettlementView({
   const [isCreatingTable, setIsCreatingTable] = useState(false)
   const [selectedMonth, setSelectedMonth] = useState<string>("all")
   const [detailedTransactions, setDetailedTransactions] = useState<DetailedTransaction[]>([])
+  const [activeTab, setActiveTab] = useState("all")
+  const [selectedPayer, setSelectedPayer] = useState<string | null>(null)
+  const [selectedReceiver, setSelectedReceiver] = useState<string | null>(null)
+  const [selectedTransaction, setSelectedTransaction] = useState<DetailedTransaction | null>(null)
+  const [searchTerm, setSearchTerm] = useState("")
+  const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>({})
+  const [viewMode, setViewMode] = useState<"list" | "grouped">("grouped")
+
   const supabase = createClient()
   const { toast } = useToast()
 
@@ -314,7 +349,7 @@ export default function SettlementView({
 
       if (sharedWith.length === 0) return
 
-      const amountPerPerson = expense.amount / sharedWith.length
+      const amountPerPerson = roundAmount(expense.amount / sharedWith.length)
 
       // Với mỗi người chia sẻ chi phí, tạo một giao dịch chi tiết
       sharedWith.forEach((roommateId) => {
@@ -328,6 +363,7 @@ export default function SettlementView({
           expenseId: expense.id,
           expenseDescription: expense.description,
           date: expense.date,
+          sharedWith: expense.sharedWith,
         })
       })
     })
@@ -336,7 +372,7 @@ export default function SettlementView({
   }
 
   // Lọc giao dịch theo tháng
-  const getFilteredTransactions = () => {
+  const getFilteredByMonth = () => {
     if (selectedMonth === "all") {
       return detailedTransactions
     }
@@ -350,6 +386,70 @@ export default function SettlementView({
       )
     })
   }
+
+  // Lọc giao dịch theo tab và bộ lọc
+  const filteredTransactions = useMemo(() => {
+    let result = getFilteredByMonth()
+
+    // Lọc theo tab
+    if (activeTab === "expense") {
+      // Khoản chi - người dùng phải trả tiền cho người khác
+      result = result.filter((t) => t.from !== selectedPayer)
+    } else if (activeTab === "income") {
+      // Khoản thu - người dùng nhận tiền từ người khác
+      result = result.filter((t) => t.to !== selectedReceiver)
+    } else if (activeTab === "paid") {
+      // Đã thanh toán
+      result = result.filter((t) => {
+        const id = getTransactionId(t.from, t.to, t.expenseId)
+        return paymentStatuses[id]
+      })
+    }
+
+    // Lọc theo người trả
+    if (selectedPayer) {
+      result = result.filter((t) => t.from === selectedPayer)
+    }
+
+    // Lọc theo người nhận
+    if (selectedReceiver) {
+      result = result.filter((t) => t.to === selectedReceiver)
+    }
+
+    // Lọc theo từ khóa tìm kiếm
+    if (searchTerm.trim()) {
+      const term = searchTerm.toLowerCase().trim()
+      result = result.filter(
+        (t) =>
+          getRoommateName(t.from).toLowerCase().includes(term) ||
+          getRoommateName(t.to).toLowerCase().includes(term) ||
+          t.expenseDescription.toLowerCase().includes(term) ||
+          formatCurrency(t.amount).toLowerCase().includes(term),
+      )
+    }
+
+    return result
+  }, [detailedTransactions, activeTab, selectedMonth, selectedPayer, selectedReceiver, paymentStatuses, searchTerm])
+
+  // Nhóm các giao dịch theo mô tả
+  const groupedTransactions = useMemo(() => {
+    const groups: Record<string, GroupedTransaction> = {}
+
+    filteredTransactions.forEach((transaction) => {
+      const key = transaction.expenseDescription
+      if (!groups[key]) {
+        groups[key] = {
+          description: key,
+          transactions: [],
+          totalAmount: 0,
+        }
+      }
+      groups[key].transactions.push(transaction)
+      groups[key].totalAmount += transaction.amount
+    })
+
+    return Object.values(groups).sort((a, b) => b.totalAmount - a.totalAmount)
+  }, [filteredTransactions])
 
   // Tạo danh sách các tháng có giao dịch
   const getAvailableMonths = () => {
@@ -368,8 +468,7 @@ export default function SettlementView({
   const getTotalByRecipient = () => {
     const totals: Record<string, number> = {}
 
-    const filtered = getFilteredTransactions()
-    filtered.forEach((transaction) => {
+    filteredTransactions.forEach((transaction) => {
       if (!totals[transaction.to]) {
         totals[transaction.to] = 0
       }
@@ -383,8 +482,7 @@ export default function SettlementView({
   const getTotalByPayer = () => {
     const totals: Record<string, number> = {}
 
-    const filtered = getFilteredTransactions()
-    filtered.forEach((transaction) => {
+    filteredTransactions.forEach((transaction) => {
       if (!totals[transaction.from]) {
         totals[transaction.from] = 0
       }
@@ -402,26 +500,58 @@ export default function SettlementView({
 
   // Xuất dữ liệu ra file CSV
   const exportToCSV = () => {
-    const filtered = getFilteredTransactions()
-    if (filtered.length === 0) return
+    if (filteredTransactions.length === 0) return
 
     // Tạo nội dung CSV
-    let csvContent = "Người trả,Người nhận,Mô tả chi phí,Ngày,Số tiền,Đã thanh toán\n"
+    let csvContent = "Người trả,Phòng,Người nhận,Phòng,Mô tả chi phí,Ngày,Số tiền,Đã thanh toán\n"
 
-    filtered.forEach((transaction) => {
+    filteredTransactions.forEach((transaction) => {
       const fromName = getRoommateName(transaction.from)
+      const fromRoom = roommates.find((r) => r.id === transaction.from)?.room || ""
       const toName = getRoommateName(transaction.to)
+      const toRoom = roommates.find((r) => r.id === transaction.to)?.room || ""
       const description = transaction.expenseDescription
       const date = format(new Date(transaction.date), "dd/MM/yyyy")
       const amount = formatCurrency(transaction.amount)
       const transactionId = getTransactionId(transaction.from, transaction.to, transaction.expenseId)
       const isPaid = paymentStatuses[transactionId] ? "Đã thanh toán" : "Chưa thanh toán"
 
-      csvContent += `"${fromName}","${toName}","${description}","${date}","${amount}","${isPaid}"\n`
+      csvContent += `"${fromName}","${fromRoom}","${toName}","${toRoom}","${description}","${date}","${amount}","${isPaid}"\n`
     })
 
-    // Tạo blob và tải xuống
-    const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" })
+    // Thêm phần tổng hợp ai nợ ai
+    csvContent += "\n\nTổng hợp khoản nợ\n"
+    csvContent += "Người trả,Phòng,Người nhận,Phòng,Tổng số tiền\n"
+
+    // Tạo bảng tổng hợp ai nợ ai
+    const debtSummary: Record<string, { from: string; fromRoom: string; to: string; toRoom: string; amount: number }> =
+      {}
+
+    filteredTransactions.forEach((transaction) => {
+      const key = `${transaction.from}-${transaction.to}`
+      if (!debtSummary[key]) {
+        debtSummary[key] = {
+          from: transaction.from,
+          fromRoom: roommates.find((r) => r.id === transaction.from)?.room || "",
+          to: transaction.to,
+          toRoom: roommates.find((r) => r.id === transaction.to)?.room || "",
+          amount: 0,
+        }
+      }
+      debtSummary[key].amount += transaction.amount
+    })
+
+    // Thêm tổng hợp vào CSV
+    Object.values(debtSummary).forEach((summary) => {
+      const fromName = getRoommateName(summary.from)
+      const toName = getRoommateName(summary.to)
+      const amount = formatCurrency(summary.amount)
+      csvContent += `"${fromName}","${summary.fromRoom}","${toName}","${summary.toRoom}","${amount}"\n`
+    })
+
+    // Tạo blob với BOM (Byte Order Mark) để đảm bảo Excel hiển thị đúng ký tự Unicode
+    const BOM = "\uFEFF"
+    const blob = new Blob([BOM + csvContent], { type: "text/csv;charset=utf-8;" })
     const url = URL.createObjectURL(blob)
     const link = document.createElement("a")
     link.setAttribute("href", url)
@@ -433,17 +563,44 @@ export default function SettlementView({
     document.body.removeChild(link)
   }
 
+  // Xử lý mở rộng/thu gọn tất cả các nhóm
+  const toggleAllGroups = (expand: boolean) => {
+    const newExpandedGroups: Record<string, boolean> = {}
+    groupedTransactions.forEach((group) => {
+      newExpandedGroups[group.description] = expand
+    })
+    setExpandedGroups(newExpandedGroups)
+  }
+
+  // Xử lý mở rộng/thu gọn một nhóm
+  const toggleGroup = (description: string) => {
+    setExpandedGroups((prev) => ({
+      ...prev,
+      [description]: !prev[description],
+    }))
+  }
+
   const availableMonths = getAvailableMonths()
-  const filteredTransactions = getFilteredTransactions()
   const totalByRecipient = getTotalByRecipient()
   const totalByPayer = getTotalByPayer()
+
+  // Tính số giao dịch đã thanh toán
+  const paidTransactionsCount = filteredTransactions.filter((t) => {
+    const id = getTransactionId(t.from, t.to, t.expenseId)
+    return paymentStatuses[id]
+  }).length
+
+  // Tính tổng số tiền
+  const totalAmount = filteredTransactions.reduce((sum, t) => sum + t.amount, 0)
 
   return (
     <Card>
       <CardHeader className="flex flex-row items-center justify-between">
         <div>
           <CardTitle>Kế hoạch thanh toán</CardTitle>
-          <CardDescription>Chi tiết các khoản thanh toán và tổng hợp</CardDescription>
+          <CardDescription>
+            Để thanh toán tất cả chi phí, các khoản thanh toán sau đây cần được thực hiện:
+          </CardDescription>
         </div>
         <div className="flex space-x-2">
           {!tableExists && (
@@ -452,6 +609,82 @@ export default function SettlementView({
               {isCreatingTable ? "Đang tạo bảng..." : "Tạo bảng thanh toán"}
             </Button>
           )}
+
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button variant="outline" size="sm">
+                <Filter className="h-4 w-4 mr-2" /> Bộ lọc
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent className="w-56">
+              <div className="p-2">
+                <div className="mb-2">
+                  <p className="text-sm font-medium mb-1">Lọc theo tháng:</p>
+                  <select
+                    className="w-full text-sm border rounded px-2 py-1"
+                    value={selectedMonth}
+                    onChange={(e) => setSelectedMonth(e.target.value)}
+                  >
+                    <option value="all">Tất cả</option>
+                    {availableMonths.map((month) => {
+                      const [year, monthNum] = month.split("-")
+                      return (
+                        <option key={month} value={month}>
+                          Tháng {monthNum}/{year}
+                        </option>
+                      )
+                    })}
+                  </select>
+                </div>
+
+                <div className="mb-2">
+                  <p className="text-sm font-medium mb-1">Người trả:</p>
+                  <select
+                    className="w-full text-sm border rounded px-2 py-1"
+                    value={selectedPayer || ""}
+                    onChange={(e) => setSelectedPayer(e.target.value || null)}
+                  >
+                    <option value="">Tất cả</option>
+                    {roommates.map((roommate) => (
+                      <option key={roommate.id} value={roommate.id}>
+                        {roommate.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className="mb-2">
+                  <p className="text-sm font-medium mb-1">Người nhận:</p>
+                  <select
+                    className="w-full text-sm border rounded px-2 py-1"
+                    value={selectedReceiver || ""}
+                    onChange={(e) => setSelectedReceiver(e.target.value || null)}
+                  >
+                    <option value="">Tất cả</option>
+                    {roommates.map((roommate) => (
+                      <option key={roommate.id} value={roommate.id}>
+                        {roommate.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="w-full mt-2"
+                  onClick={() => {
+                    setSelectedPayer(null)
+                    setSelectedReceiver(null)
+                    setSelectedMonth("all")
+                  }}
+                >
+                  Xóa bộ lọc
+                </Button>
+              </div>
+            </DropdownMenuContent>
+          </DropdownMenu>
+
           {detailedTransactions.length > 0 && (
             <Button variant="outline" size="sm" onClick={exportToCSV}>
               <FileSpreadsheet className="h-4 w-4 mr-2" /> Xuất CSV
@@ -480,183 +713,379 @@ export default function SettlementView({
           </p>
         ) : (
           <div className="space-y-4">
-            <div className="flex items-center space-x-2 mb-4">
-              <Filter className="h-4 w-4 text-muted-foreground" />
-              <span className="text-sm font-medium">Lọc theo tháng:</span>
-              <select
-                className="text-sm border rounded px-2 py-1"
-                value={selectedMonth}
-                onChange={(e) => setSelectedMonth(e.target.value)}
-              >
-                <option value="all">Tất cả</option>
-                {availableMonths.map((month) => {
-                  const [year, monthNum] = month.split("-")
-                  return (
-                    <option key={month} value={month}>
-                      Tháng {monthNum}/{year}
-                    </option>
-                  )
-                })}
-              </select>
-            </div>
-
-            <Tabs defaultValue="detailed">
-              <TabsList className="mb-4">
-                <TabsTrigger value="detailed">Chi tiết thanh toán</TabsTrigger>
-                <TabsTrigger value="summary">Tổng hợp theo người</TabsTrigger>
+            <Tabs defaultValue="all" value={activeTab} onValueChange={setActiveTab}>
+              <TabsList className="mb-4 grid grid-cols-4">
+                <TabsTrigger value="all">Tất cả</TabsTrigger>
+                <TabsTrigger value="expense">Khoản chi</TabsTrigger>
+                <TabsTrigger value="income">Khoản thu</TabsTrigger>
+                <TabsTrigger value="paid">Đã thanh toán</TabsTrigger>
               </TabsList>
 
-              <TabsContent value="detailed">
-                <div className="border rounded-md overflow-hidden">
-                  <Table>
-                    <TableHeader>
-                      <TableRow>
-                        <TableHead>Người trả</TableHead>
-                        <TableHead>Người nhận</TableHead>
-                        <TableHead>Mô tả chi phí</TableHead>
-                        <TableHead>Ngày</TableHead>
-                        <TableHead className="text-right">Số tiền</TableHead>
-                        <TableHead className="text-center">Trạng thái</TableHead>
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {filteredTransactions.length === 0 ? (
-                        <TableRow>
-                          <TableCell colSpan={6} className="text-center py-4 text-muted-foreground">
-                            Không có dữ liệu thanh toán cho thời gian đã chọn
-                          </TableCell>
-                        </TableRow>
-                      ) : (
-                        filteredTransactions.map((transaction, index) => {
-                          const transactionId = getTransactionId(
-                            transaction.from,
-                            transaction.to,
-                            transaction.expenseId,
-                          )
-                          const isPaid = paymentStatuses[transactionId] || false
-
-                          return (
-                            <TableRow key={index}>
-                              <TableCell className="font-medium">{getRoommateName(transaction.from)}</TableCell>
-                              <TableCell>{getRoommateName(transaction.to)}</TableCell>
-                              <TableCell>{transaction.expenseDescription}</TableCell>
-                              <TableCell>{format(new Date(transaction.date), "dd/MM/yyyy", { locale: vi })}</TableCell>
-                              <TableCell className="text-right font-medium">
-                                {formatCurrency(transaction.amount)}
-                              </TableCell>
-                              <TableCell className="text-center">
-                                <div className="flex items-center justify-center">
-                                  <Checkbox
-                                    checked={isPaid}
-                                    onCheckedChange={(checked) => {
-                                      updatePaymentStatus(
-                                        transaction.from,
-                                        transaction.to,
-                                        transaction.amount,
-                                        checked as boolean,
-                                        transaction.expenseId,
-                                      )
-                                    }}
-                                    disabled={isLoading}
-                                  />
-                                  <span className="ml-2 text-xs">{isPaid ? "Đã thanh toán" : "Chưa thanh toán"}</span>
-                                </div>
-                              </TableCell>
-                            </TableRow>
-                          )
-                        })
+              <TabsContent value={activeTab}>
+                <div className="flex flex-col space-y-4">
+                  {/* Thanh tìm kiếm và công cụ */}
+                  <div className="flex flex-col md:flex-row justify-between gap-2 mb-2">
+                    <div className="relative w-full md:w-64">
+                      <Search className="absolute left-2 top-2.5 h-4 w-4 text-muted-foreground" />
+                      <Input
+                        placeholder="Tìm kiếm..."
+                        className="pl-8"
+                        value={searchTerm}
+                        onChange={(e) => setSearchTerm(e.target.value)}
+                      />
+                      {searchTerm && (
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="absolute right-0 top-0 h-full"
+                          onClick={() => setSearchTerm("")}
+                        >
+                          <X className="h-4 w-4" />
+                        </Button>
                       )}
-                    </TableBody>
-                  </Table>
-                </div>
-              </TabsContent>
-
-              <TabsContent value="summary">
-                <div className="grid md:grid-cols-2 gap-4">
-                  <Card>
-                    <CardHeader>
-                      <CardTitle className="text-base">Tổng hợp theo người trả</CardTitle>
-                    </CardHeader>
-                    <CardContent>
-                      <div className="space-y-2">
-                        {Object.keys(totalByPayer).length === 0 ? (
-                          <p className="text-muted-foreground text-center py-2">Không có dữ liệu</p>
-                        ) : (
-                          Object.entries(totalByPayer).map(([roommate, total]) => (
-                            <div key={roommate} className="flex justify-between items-center p-2 border-b">
-                              <span>{getRoommateName(roommate)}</span>
-                              <span className="font-medium">{formatCurrency(total)}</span>
-                            </div>
-                          ))
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <div className="flex items-center space-x-2">
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => setViewMode(viewMode === "list" ? "grouped" : "list")}
+                        >
+                          {viewMode === "list" ? "Xem theo nhóm" : "Xem danh sách"}
+                        </Button>
+                        {viewMode === "grouped" && (
+                          <>
+                            <Button variant="outline" size="sm" onClick={() => toggleAllGroups(true)}>
+                              <ChevronDown className="h-4 w-4 mr-1" /> Mở tất cả
+                            </Button>
+                            <Button variant="outline" size="sm" onClick={() => toggleAllGroups(false)}>
+                              <ChevronUp className="h-4 w-4 mr-1" /> Thu gọn tất cả
+                            </Button>
+                          </>
                         )}
                       </div>
-                    </CardContent>
-                  </Card>
+                    </div>
+                  </div>
 
-                  <Card>
-                    <CardHeader>
-                      <CardTitle className="text-base">Tổng hợp theo người nhận</CardTitle>
-                    </CardHeader>
-                    <CardContent>
-                      <div className="space-y-2">
-                        {Object.keys(totalByRecipient).length === 0 ? (
-                          <p className="text-muted-foreground text-center py-2">Không có dữ liệu</p>
+                  {/* Hiển thị theo chế độ xem */}
+                  {viewMode === "list" ? (
+                    <div className="border rounded-md overflow-hidden">
+                      <ScrollArea className="h-[500px]">
+                        <Table>
+                          <TableHeader>
+                            <TableRow>
+                              <TableHead>Người trả</TableHead>
+                              <TableHead>Người nhận</TableHead>
+                              <TableHead>Mô tả</TableHead>
+                              <TableHead className="text-right">Số tiền</TableHead>
+                              <TableHead className="text-center">Trạng thái</TableHead>
+                            </TableRow>
+                          </TableHeader>
+                          <TableBody>
+                            {filteredTransactions.length === 0 ? (
+                              <TableRow>
+                                <TableCell colSpan={5} className="text-center py-4 text-muted-foreground">
+                                  Không có dữ liệu thanh toán cho bộ lọc đã chọn
+                                </TableCell>
+                              </TableRow>
+                            ) : (
+                              filteredTransactions.map((transaction, index) => {
+                                const transactionId = getTransactionId(
+                                  transaction.from,
+                                  transaction.to,
+                                  transaction.expenseId,
+                                )
+                                const isPaid = paymentStatuses[transactionId] || false
+                                const sharedCount = transaction.sharedWith.length
+
+                                return (
+                                  <TableRow
+                                    key={index}
+                                    className="cursor-pointer hover:bg-muted/80"
+                                    onClick={() => setSelectedTransaction(transaction)}
+                                  >
+                                    <TableCell className="font-medium">
+                                      <div className="flex items-center gap-1">
+                                        {getRoommateName(transaction.from)}
+                                        {sharedCount > 1 && (
+                                          <TooltipProvider>
+                                            <Tooltip>
+                                              <TooltipTrigger asChild>
+                                                <Badge variant="outline" className="ml-1">
+                                                  +{sharedCount - 1}
+                                                </Badge>
+                                              </TooltipTrigger>
+                                              <TooltipContent>
+                                                <p>Chia sẻ với {sharedCount} người</p>
+                                              </TooltipContent>
+                                            </Tooltip>
+                                          </TooltipProvider>
+                                        )}
+                                      </div>
+                                    </TableCell>
+                                    <TableCell>{getRoommateName(transaction.to)}</TableCell>
+                                    <TableCell>{transaction.expenseDescription}</TableCell>
+                                    <TableCell className="text-right font-medium">
+                                      {formatCurrency(transaction.amount)}
+                                    </TableCell>
+                                    <TableCell className="text-center">
+                                      <div className="flex items-center justify-center">
+                                        <Checkbox
+                                          checked={isPaid}
+                                          onCheckedChange={(checked) => {
+                                            updatePaymentStatus(
+                                              transaction.from,
+                                              transaction.to,
+                                              transaction.amount,
+                                              checked as boolean,
+                                              transaction.expenseId,
+                                            )
+                                          }}
+                                          disabled={isLoading}
+                                          onClick={(e) => e.stopPropagation()}
+                                        />
+                                        <span
+                                          className={`ml-2 text-xs ${isPaid ? "text-green-600" : "text-amber-600"}`}
+                                        >
+                                          {isPaid ? "Đã thanh toán" : "Chưa thanh toán"}
+                                        </span>
+                                      </div>
+                                    </TableCell>
+                                  </TableRow>
+                                )
+                              })
+                            )}
+                          </TableBody>
+                        </Table>
+                      </ScrollArea>
+                    </div>
+                  ) : (
+                    <div className="border rounded-md overflow-hidden">
+                      <ScrollArea className="h-[500px]">
+                        {groupedTransactions.length === 0 ? (
+                          <div className="text-center py-4 text-muted-foreground">
+                            Không có dữ liệu thanh toán cho bộ lọc đã chọn
+                          </div>
                         ) : (
-                          Object.entries(totalByRecipient).map(([roommate, total]) => (
-                            <div key={roommate} className="flex justify-between items-center p-2 border-b">
-                              <span>{getRoommateName(roommate)}</span>
-                              <span className="font-medium">{formatCurrency(total)}</span>
-                            </div>
-                          ))
-                        )}
-                      </div>
-                    </CardContent>
-                  </Card>
-                </div>
+                          <Accordion
+                            type="multiple"
+                            className="w-full"
+                            value={Object.keys(expandedGroups).filter((key) => expandedGroups[key])}
+                          >
+                            {groupedTransactions.map((group) => (
+                              <AccordionItem key={group.description} value={group.description}>
+                                <AccordionTrigger
+                                  onClick={(e) => {
+                                    e.preventDefault()
+                                    toggleGroup(group.description)
+                                  }}
+                                  className="px-4 py-2 hover:bg-muted/50"
+                                >
+                                  <div className="flex justify-between items-center w-full pr-4">
+                                    <div className="flex items-center">
+                                      <span className="font-medium">{group.description}</span>
+                                      <Badge className="ml-2" variant="secondary">
+                                        {group.transactions.length}
+                                      </Badge>
+                                    </div>
+                                    <span className="font-bold">{formatCurrency(group.totalAmount)}</span>
+                                  </div>
+                                </AccordionTrigger>
+                                <AccordionContent>
+                                  <div className="px-4 pb-2">
+                                    <Table>
+                                      <TableHeader>
+                                        <TableRow>
+                                          <TableHead>Người trả</TableHead>
+                                          <TableHead>Người nhận</TableHead>
+                                          <TableHead className="text-right">Số tiền</TableHead>
+                                          <TableHead className="text-center">Trạng thái</TableHead>
+                                        </TableRow>
+                                      </TableHeader>
+                                      <TableBody>
+                                        {group.transactions.map((transaction, index) => {
+                                          const transactionId = getTransactionId(
+                                            transaction.from,
+                                            transaction.to,
+                                            transaction.expenseId,
+                                          )
+                                          const isPaid = paymentStatuses[transactionId] || false
 
-                <div className="mt-4 p-4 bg-muted rounded-md">
-                  <h3 className="font-semibold mb-2">Tổng quan thanh toán</h3>
-                  <ul className="space-y-2">
-                    <li className="flex justify-between">
-                      <span>Tổng số giao dịch:</span>
-                      <span className="font-medium">{filteredTransactions.length}</span>
-                    </li>
-                    <li className="flex justify-between">
-                      <span>Đã thanh toán:</span>
-                      <span className="font-medium">
-                        {
-                          filteredTransactions.filter((t) => {
-                            const id = getTransactionId(t.from, t.to, t.expenseId)
-                            return paymentStatuses[id]
-                          }).length
-                        }
-                      </span>
-                    </li>
-                    <li className="flex justify-between">
-                      <span>Chưa thanh toán:</span>
-                      <span className="font-medium">
-                        {
-                          filteredTransactions.filter((t) => {
-                            const id = getTransactionId(t.from, t.to, t.expenseId)
-                            return !paymentStatuses[id]
-                          }).length
-                        }
-                      </span>
-                    </li>
-                    <li className="flex justify-between">
-                      <span>Tổng số tiền:</span>
-                      <span className="font-medium">
-                        {formatCurrency(filteredTransactions.reduce((sum, t) => sum + t.amount, 0))}
-                      </span>
-                    </li>
-                  </ul>
+                                          return (
+                                            <TableRow
+                                              key={index}
+                                              className="cursor-pointer hover:bg-muted/80"
+                                              onClick={() => setSelectedTransaction(transaction)}
+                                            >
+                                              <TableCell>{getRoommateName(transaction.from)}</TableCell>
+                                              <TableCell>{getRoommateName(transaction.to)}</TableCell>
+                                              <TableCell className="text-right">
+                                                {formatCurrency(transaction.amount)}
+                                              </TableCell>
+                                              <TableCell className="text-center">
+                                                <div className="flex items-center justify-center">
+                                                  <Checkbox
+                                                    checked={isPaid}
+                                                    onCheckedChange={(checked) => {
+                                                      updatePaymentStatus(
+                                                        transaction.from,
+                                                        transaction.to,
+                                                        transaction.amount,
+                                                        checked as boolean,
+                                                        transaction.expenseId,
+                                                      )
+                                                    }}
+                                                    disabled={isLoading}
+                                                    onClick={(e) => e.stopPropagation()}
+                                                  />
+                                                  <span
+                                                    className={`ml-2 text-xs ${
+                                                      isPaid ? "text-green-600" : "text-amber-600"
+                                                    }`}
+                                                  >
+                                                    {isPaid ? "Đã thanh toán" : "Chưa thanh toán"}
+                                                  </span>
+                                                </div>
+                                              </TableCell>
+                                            </TableRow>
+                                          )
+                                        })}
+                                      </TableBody>
+                                    </Table>
+                                  </div>
+                                </AccordionContent>
+                              </AccordionItem>
+                            ))}
+                          </Accordion>
+                        )}
+                      </ScrollArea>
+                    </div>
+                  )}
+
+                  <div className="mt-6 p-4 bg-muted rounded-md">
+                    <h3 className="font-semibold mb-3">Tổng quan thanh toán</h3>
+                    <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                      <div className="bg-white p-3 rounded-md shadow-sm">
+                        <p className="text-sm text-muted-foreground">Tổng số giao dịch</p>
+                        <p className="text-2xl font-bold">{filteredTransactions.length}</p>
+                      </div>
+                      <div className="bg-white p-3 rounded-md shadow-sm">
+                        <p className="text-sm text-muted-foreground">Đã thanh toán</p>
+                        <p className="text-2xl font-bold text-green-600">{paidTransactionsCount}</p>
+                      </div>
+                      <div className="bg-white p-3 rounded-md shadow-sm">
+                        <p className="text-sm text-muted-foreground">Chưa thanh toán</p>
+                        <p className="text-2xl font-bold text-amber-600">
+                          {filteredTransactions.length - paidTransactionsCount}
+                        </p>
+                      </div>
+                      <div className="bg-white p-3 rounded-md shadow-sm">
+                        <p className="text-sm text-muted-foreground">Tổng số tiền</p>
+                        <p className="text-2xl font-bold">{formatCurrency(totalAmount)}</p>
+                      </div>
+                    </div>
+                  </div>
                 </div>
               </TabsContent>
             </Tabs>
+
+            {/* Dialog chi tiết giao dịch */}
+            <Dialog open={!!selectedTransaction} onOpenChange={(open) => !open && setSelectedTransaction(null)}>
+              <DialogContent className="sm:max-w-md">
+                <DialogHeader>
+                  <DialogTitle>Chi tiết giao dịch</DialogTitle>
+                  <DialogDescription>Thông tin chi tiết về khoản thanh toán</DialogDescription>
+                </DialogHeader>
+
+                {selectedTransaction && (
+                  <div className="space-y-4">
+                    <div className="grid grid-cols-2 gap-4">
+                      <div>
+                        <p className="text-sm text-muted-foreground">Ngày giao dịch</p>
+                        <p className="font-medium">
+                          {format(new Date(selectedTransaction.date), "dd/MM/yyyy", { locale: vi })}
+                        </p>
+                      </div>
+                      <div>
+                        <p className="text-sm text-muted-foreground">Số tiền</p>
+                        <p className="font-medium">{formatCurrency(selectedTransaction.amount)}</p>
+                      </div>
+                    </div>
+
+                    <div>
+                      <p className="text-sm text-muted-foreground">Mô tả</p>
+                      <p className="font-medium">{selectedTransaction.expenseDescription}</p>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-4">
+                      <div>
+                        <p className="text-sm text-muted-foreground">Người trả</p>
+                        <p className="font-medium">{getRoommateName(selectedTransaction.from)}</p>
+                        <p className="text-xs text-muted-foreground">
+                          {roommates.find((r) => r.id === selectedTransaction.from)?.room}
+                        </p>
+                      </div>
+                      <div>
+                        <p className="text-sm text-muted-foreground">Người nhận</p>
+                        <p className="font-medium">{getRoommateName(selectedTransaction.to)}</p>
+                        <p className="text-xs text-muted-foreground">
+                          {roommates.find((r) => r.id === selectedTransaction.to)?.room}
+                        </p>
+                      </div>
+                    </div>
+
+                    <div>
+                      <p className="text-sm text-muted-foreground">Chia sẻ với</p>
+                      <div className="mt-1 space-y-1">
+                        {selectedTransaction.sharedWith.map((id) => (
+                          <div key={id} className="flex items-center">
+                            <div className="w-2 h-2 rounded-full bg-primary mr-2"></div>
+                            <span>{getRoommateName(id)}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div className="border-t pt-4 mt-4">
+                      <p className="text-sm text-muted-foreground mb-2">Trạng thái thanh toán</p>
+                      <div className="flex items-center">
+                        <Checkbox
+                          checked={
+                            paymentStatuses[
+                              getTransactionId(
+                                selectedTransaction.from,
+                                selectedTransaction.to,
+                                selectedTransaction.expenseId,
+                              )
+                            ] || false
+                          }
+                          onCheckedChange={(checked) => {
+                            updatePaymentStatus(
+                              selectedTransaction.from,
+                              selectedTransaction.to,
+                              selectedTransaction.amount,
+                              checked as boolean,
+                              selectedTransaction.expenseId,
+                            )
+                          }}
+                          disabled={isLoading}
+                        />
+                        <span className="ml-2">Đánh dấu là đã thanh toán</span>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                <DialogClose asChild>
+                  <Button type="button" variant="secondary">
+                    Đóng
+                  </Button>
+                </DialogClose>
+              </DialogContent>
+            </Dialog>
           </div>
         )}
       </CardContent>
     </Card>
   )
 }
-

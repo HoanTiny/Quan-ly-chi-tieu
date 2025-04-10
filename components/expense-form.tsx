@@ -160,4 +160,3 @@ export default function ExpenseForm({ roommates, rooms, onAddExpense }: ExpenseF
     </Card>
   )
 }
-

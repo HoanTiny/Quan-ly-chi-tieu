@@ -8,12 +8,16 @@ import ExpenseForm from "./expense-form"
 import ExpenseList from "./expense-list"
 import SummaryView from "./summary-view"
 import SettlementView from "./settlement-view"
+import MonthlyDashboard from "./monthly-dashboard"
 import { createClient } from "@/lib/supabase/client"
 import { Button } from "@/components/ui/button"
-import { LogOut, Share2 } from "lucide-react"
+import { LogOut, Share2, Database } from "lucide-react"
 import { useToast } from "@/hooks/use-toast"
 import { Label } from "@/components/ui/label"
 import { Input } from "@/components/ui/input"
+import { Badge } from "@/components/ui/badge"
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
+import UserManagement from "./user-management"
 
 // Types
 export interface Roommate {
@@ -31,6 +35,7 @@ export interface Expense {
   date: Date
   sharedWith: string[]
   household_id: string
+  created_by?: string // Thêm trường người tạo chi tiêu (tùy chọn)
 }
 
 export interface Household {
@@ -38,6 +43,13 @@ export interface Household {
   name: string
   created_by: string
   invite_code: string
+}
+
+export interface HouseholdMember {
+  id: string
+  household_id: string
+  user_id: string
+  role: "admin" | "member"
 }
 
 export default function ExpenseTracker({ userId }: { userId: string }) {
@@ -52,6 +64,9 @@ export default function ExpenseTracker({ userId }: { userId: string }) {
   const [householdName, setHouseholdName] = useState("")
   const [showCreateHousehold, setShowCreateHousehold] = useState(false)
   const [showJoinHousehold, setShowJoinHousehold] = useState(false)
+  const [userRole, setUserRole] = useState<"admin" | "member">("member") // Thêm state lưu vai trò của người dùng
+  const [needsDatabaseUpdate, setNeedsDatabaseUpdate] = useState(false)
+  const [isUpdatingDatabase, setIsUpdatingDatabase] = useState(false)
 
   const supabase = createClient()
   const { toast } = useToast()
@@ -62,10 +77,10 @@ export default function ExpenseTracker({ userId }: { userId: string }) {
       try {
         setIsLoading(true)
 
-        // Lấy danh sách household_id mà người dùng là thành viên
+        // Lấy danh sách household_id và role mà người dùng là thành viên
         const { data: membershipData, error: membershipError } = await supabase
           .from("household_members")
-          .select("household_id")
+          .select("household_id, role")
           .eq("user_id", userId)
 
         if (membershipError) {
@@ -106,7 +121,14 @@ export default function ExpenseTracker({ userId }: { userId: string }) {
 
         if (householdData && householdData.length > 0) {
           setHouseholds(householdData)
-          setCurrentHousehold(householdData[0].id)
+          const firstHouseholdId = householdData[0].id
+          setCurrentHousehold(firstHouseholdId)
+
+          // Lấy vai trò của người dùng trong hộ gia đình đầu tiên
+          const userMembership = membershipData.find((m) => m.household_id === firstHouseholdId)
+          if (userMembership) {
+            setUserRole(userMembership.role as "admin" | "member")
+          }
         }
       } catch (error) {
         console.error("Unexpected error:", error)
@@ -129,6 +151,20 @@ export default function ExpenseTracker({ userId }: { userId: string }) {
       if (!currentHousehold) return
 
       try {
+        // Lấy vai trò của người dùng trong hộ gia đình hiện tại
+        const { data: memberData, error: memberError } = await supabase
+          .from("household_members")
+          .select("role")
+          .eq("household_id", currentHousehold)
+          .eq("user_id", userId)
+          .single()
+
+        if (memberError) {
+          console.error("Error fetching user role:", memberError)
+        } else if (memberData) {
+          setUserRole(memberData.role as "admin" | "member")
+        }
+
         // Fetch rooms
         const { data: roomData, error: roomError } = await supabase
           .from("rooms")
@@ -163,57 +199,63 @@ export default function ExpenseTracker({ userId }: { userId: string }) {
           setRoommates(roommateData)
         }
 
-        // Fetch expenses
-        const { data: expenseData, error: expenseError } = await supabase
-          .from("expenses")
-          .select("*")
-          .eq("household_id", currentHousehold)
+        // Fetch expenses - Kiểm tra xem cột created_by có tồn tại không
+        try {
+          // Thử truy vấn với cột created_by
+          const { data: expenseData, error: expenseError } = await supabase
+            .from("expenses")
+            .select("*, created_by")
+            .eq("household_id", currentHousehold)
 
-        if (expenseError) {
-          console.error("Error fetching expenses:", expenseError)
-          toast({
-            title: "Lỗi",
-            description: "Không thể tải danh sách chi phí. Vui lòng thử lại sau.",
-            variant: "destructive",
-          })
-          return
-        }
+          if (expenseError) {
+            // Nếu có lỗi liên quan đến cột created_by
+            if (expenseError.message.includes("created_by")) {
+              setNeedsDatabaseUpdate(true)
+              // Thử lại truy vấn không có cột created_by
+              const { data: basicExpenseData, error: basicExpenseError } = await supabase
+                .from("expenses")
+                .select("*")
+                .eq("household_id", currentHousehold)
 
-        if (expenseData) {
-          // Lấy thông tin chia sẻ chi phí cho mỗi chi phí
-          const expensesWithShares = await Promise.all(
-            expenseData.map(async (expense) => {
-              const { data: sharesData, error: sharesError } = await supabase
-                .from("expense_shares")
-                .select("roommate_id")
-                .eq("expense_id", expense.id)
-
-              if (sharesError) {
-                console.error("Error fetching expense shares:", sharesError)
-                return {
-                  id: expense.id,
-                  description: expense.description,
-                  amount: expense.amount,
-                  paidBy: expense.paid_by,
-                  date: new Date(expense.created_at),
-                  sharedWith: [],
-                  household_id: expense.household_id,
-                }
+              if (basicExpenseError) {
+                console.error("Error fetching expenses:", basicExpenseError)
+                toast({
+                  title: "Lỗi",
+                  description: "Không thể tải danh sách chi phí. Vui lòng thử lại sau.",
+                  variant: "destructive",
+                })
+                return
               }
 
-              return {
-                id: expense.id,
-                description: expense.description,
-                amount: expense.amount,
-                paidBy: expense.paid_by,
-                date: new Date(expense.created_at),
-                sharedWith: sharesData ? sharesData.map((share) => share.roommate_id) : [],
-                household_id: expense.household_id,
+              if (basicExpenseData) {
+                processExpenseData(basicExpenseData, false)
               }
-            }),
-          )
+            } else {
+              console.error("Error fetching expenses:", expenseError)
+              toast({
+                title: "Lỗi",
+                description: "Không thể tải danh sách chi phí. Vui lòng thử lại sau.",
+                variant: "destructive",
+              })
+            }
+          } else if (expenseData) {
+            processExpenseData(expenseData, true)
+          }
+        } catch (error) {
+          console.error("Error in expense fetching:", error)
+          setNeedsDatabaseUpdate(true)
 
-          setExpenses(expensesWithShares)
+          // Thử lại truy vấn không có cột created_by
+          const { data: basicExpenseData, error: basicExpenseError } = await supabase
+            .from("expenses")
+            .select("*")
+            .eq("household_id", currentHousehold)
+
+          if (basicExpenseError) {
+            console.error("Error fetching basic expenses:", basicExpenseError)
+          } else if (basicExpenseData) {
+            processExpenseData(basicExpenseData, false)
+          }
         }
       } catch (error) {
         console.error("Unexpected error:", error)
@@ -226,7 +268,98 @@ export default function ExpenseTracker({ userId }: { userId: string }) {
     }
 
     fetchHouseholdData()
-  }, [currentHousehold, supabase, toast])
+  }, [currentHousehold, supabase, toast, userId])
+
+  // Hàm xử lý dữ liệu chi tiêu
+  const processExpenseData = async (expenseData: any[], hasCreatedByField: boolean) => {
+    try {
+      // Lấy thông tin chia sẻ chi phí cho mỗi chi phí
+      const expensesWithShares = await Promise.all(
+        expenseData.map(async (expense) => {
+          const { data: sharesData, error: sharesError } = await supabase
+            .from("expense_shares")
+            .select("roommate_id")
+            .eq("expense_id", expense.id)
+
+          if (sharesError) {
+            console.error("Error fetching expense shares:", sharesError)
+            return {
+              id: expense.id,
+              description: expense.description,
+              amount: expense.amount,
+              paidBy: expense.paid_by,
+              date: new Date(expense.created_at),
+              sharedWith: [],
+              household_id: expense.household_id,
+              created_by: hasCreatedByField ? expense.created_by : undefined,
+            }
+          }
+
+          return {
+            id: expense.id,
+            description: expense.description,
+            amount: expense.amount,
+            paidBy: expense.paid_by,
+            date: new Date(expense.created_at),
+            sharedWith: sharesData ? sharesData.map((share) => share.roommate_id) : [],
+            household_id: expense.household_id,
+            created_by: hasCreatedByField ? expense.created_by : undefined,
+          }
+        }),
+      )
+
+      setExpenses(expensesWithShares)
+    } catch (error) {
+      console.error("Error processing expense data:", error)
+    }
+  }
+
+  // Cập nhật cơ sở dữ liệu để thêm cột created_by
+  const updateDatabase = async () => {
+    if (!userRole || userRole !== "admin") {
+      toast({
+        title: "Không có quyền",
+        description: "Chỉ quản trị viên mới có thể cập nhật cơ sở dữ liệu.",
+        variant: "destructive",
+      })
+      return
+    }
+
+    setIsUpdatingDatabase(true)
+    try {
+      // Gọi API route để thực thi SQL
+      const response = await fetch("/api/database/update-schema", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+      })
+
+      if (!response.ok) {
+        const errorData = await response.json()
+        throw new Error(errorData.error || "Failed to update database")
+      }
+
+      toast({
+        title: "Thành công",
+        description: "Đã cập nhật cơ sở dữ liệu. Vui lòng tải lại trang để áp dụng thay đổi.",
+      })
+
+      // Tải lại trang sau 2 giây
+      setTimeout(() => {
+        window.location.reload()
+      }, 2000)
+    } catch (error) {
+      console.error("Error updating database:", error)
+      toast({
+        title: "Lỗi",
+        description: "Không thể cập nhật cơ sở dữ liệu. Vui lòng thử lại sau.",
+        variant: "destructive",
+      })
+    } finally {
+      setIsUpdatingDatabase(false)
+    }
+  }
 
   // Create a new household
   const createHousehold = async () => {
@@ -267,7 +400,7 @@ export default function ExpenseTracker({ userId }: { userId: string }) {
       if (householdData && householdData.length > 0) {
         const newHouseholdId = householdData[0].id
 
-        // Add the creator as a member
+        // Add the creator as a member with admin role
         const { error: memberError } = await supabase.from("household_members").insert([
           {
             household_id: newHouseholdId,
@@ -291,6 +424,7 @@ export default function ExpenseTracker({ userId }: { userId: string }) {
         setCurrentHousehold(newHouseholdId)
         setShowCreateHousehold(false)
         setHouseholdName("")
+        setUserRole("admin") // Người tạo hộ gia đình là admin
 
         toast({
           title: "Thành công",
@@ -354,12 +488,12 @@ export default function ExpenseTracker({ userId }: { userId: string }) {
         return
       }
 
-      // Add user as a member
+      // Add user as a member with member role
       const { error: memberError } = await supabase.from("household_members").insert([
         {
           household_id: householdId,
           user_id: userId,
-          role: "member",
+          role: "member", // Người tham gia bằng mã mời là member
         },
       ])
 
@@ -378,6 +512,7 @@ export default function ExpenseTracker({ userId }: { userId: string }) {
       setCurrentHousehold(householdId)
       setShowJoinHousehold(false)
       setInviteCode("")
+      setUserRole("member") // Người tham gia bằng mã mời là member
 
       toast({
         title: "Thành công",
@@ -457,6 +592,16 @@ export default function ExpenseTracker({ userId }: { userId: string }) {
   const addRoom = async (roomName: string) => {
     if (roomName.trim() === "" || rooms.includes(roomName.trim()) || !currentHousehold) return
 
+    // Kiểm tra quyền hạn - chỉ admin mới được thêm phòng
+    if (userRole !== "admin") {
+      toast({
+        title: "Không có quyền",
+        description: "Chỉ quản trị viên mới có thể thêm phòng mới.",
+        variant: "destructive",
+      })
+      return
+    }
+
     try {
       const { error } = await supabase.from("rooms").insert([
         {
@@ -489,6 +634,16 @@ export default function ExpenseTracker({ userId }: { userId: string }) {
   // Remove room
   const removeRoom = async (roomName: string) => {
     if (!currentHousehold) return
+
+    // Kiểm tra quyền hạn - chỉ admin mới được xóa phòng
+    if (userRole !== "admin") {
+      toast({
+        title: "Không có quyền",
+        description: "Chỉ quản trị viên mới có thể xóa phòng.",
+        variant: "destructive",
+      })
+      return
+    }
 
     try {
       const { error } = await supabase.from("rooms").delete().eq("household_id", currentHousehold).eq("name", roomName)
@@ -523,6 +678,16 @@ export default function ExpenseTracker({ userId }: { userId: string }) {
   // Add new roommate
   const addRoommate = async (name: string, room: string) => {
     if (name.trim() === "" || room === "" || !currentHousehold) return
+
+    // Kiểm tra quyền hạn - chỉ admin mới được thêm thành viên
+    if (userRole !== "admin") {
+      toast({
+        title: "Không có quyền",
+        description: "Chỉ quản trị viên mới có thể thêm thành viên.",
+        variant: "destructive",
+      })
+      return
+    }
 
     try {
       const { data, error } = await supabase
@@ -561,6 +726,16 @@ export default function ExpenseTracker({ userId }: { userId: string }) {
 
   // Remove roommate
   const removeRoommate = async (id: string) => {
+    // Kiểm tra quyền hạn - chỉ admin mới được xóa thành viên
+    if (userRole !== "admin") {
+      toast({
+        title: "Không có quyền",
+        description: "Chỉ quản trị viên mới có thể xóa thành viên.",
+        variant: "destructive",
+      })
+      return
+    }
+
     try {
       // First check if this roommate is used in any expenses
       const { data: expenseData } = await supabase.from("expenses").select("id").eq("paid_by", id)
@@ -610,7 +785,7 @@ export default function ExpenseTracker({ userId }: { userId: string }) {
   }
 
   // Add new expense
-  const addExpense = async (expense: Omit<Expense, "id" | "date" | "household_id">) => {
+  const addExpense = async (expense: Omit<Expense, "id" | "date" | "household_id" | "created_by">) => {
     if (!currentHousehold) return
 
     try {
@@ -623,18 +798,21 @@ export default function ExpenseTracker({ userId }: { userId: string }) {
         }
       }
 
+      // Chuẩn bị dữ liệu chi tiêu
+      const expenseData: any = {
+        description: expense.description.trim(),
+        amount: Math.round(expense.amount), // Round to whole number
+        paid_by: expense.paidBy,
+        household_id: currentHousehold,
+      }
+
+      // Thêm created_by nếu cơ sở dữ liệu đã được cập nhật
+      if (!needsDatabaseUpdate) {
+        expenseData.created_by = userId
+      }
+
       // Insert the expense
-      const { data, error } = await supabase
-        .from("expenses")
-        .insert([
-          {
-            description: expense.description.trim(),
-            amount: Math.round(expense.amount), // Round to whole number
-            paid_by: expense.paidBy,
-            household_id: currentHousehold,
-          },
-        ])
-        .select()
+      const { data, error } = await supabase.from("expenses").insert([expenseData]).select()
 
       if (error || !data || data.length === 0) {
         console.error("Error adding expense:", error)
@@ -675,6 +853,7 @@ export default function ExpenseTracker({ userId }: { userId: string }) {
         date: new Date(),
         sharedWith: sharedWith,
         household_id: currentHousehold,
+        created_by: !needsDatabaseUpdate ? userId : undefined,
       }
 
       setExpenses([...expenses, expenseObj])
@@ -690,6 +869,20 @@ export default function ExpenseTracker({ userId }: { userId: string }) {
 
   // Remove expense
   const removeExpense = async (id: string) => {
+    // Tìm chi tiêu cần xóa
+    const expenseToRemove = expenses.find((e) => e.id === id)
+    if (!expenseToRemove) return
+
+    // Kiểm tra quyền hạn - chỉ người tạo chi tiêu hoặc admin mới được xóa
+    if (expenseToRemove.created_by && expenseToRemove.created_by !== userId && userRole !== "admin") {
+      toast({
+        title: "Không có quyền",
+        description: "Chỉ người tạo chi tiêu hoặc quản trị viên mới có thể xóa chi tiêu này.",
+        variant: "destructive",
+      })
+      return
+    }
+
     try {
       // Delete expense shares first (foreign key constraint)
       await supabase.from("expense_shares").delete().eq("expense_id", id)
@@ -730,9 +923,10 @@ export default function ExpenseTracker({ userId }: { userId: string }) {
     // Calculate each expense's contribution to balances
     expenses.forEach((expense) => {
       const payer = expense.paidBy
-      const sharedCount = expense.sharedWith.length
+      const sharedWith = expense.sharedWith
 
       // Skip if no one to share with
+      const sharedCount = sharedWith.length
       if (sharedCount === 0) return
 
       const amountPerPerson = expense.amount / sharedCount
@@ -741,7 +935,7 @@ export default function ExpenseTracker({ userId }: { userId: string }) {
       balances[payer] += expense.amount
 
       // Subtract each person's share from their balance
-      expense.sharedWith.forEach((roommateId) => {
+      sharedWith.forEach((roommateId) => {
         balances[roommateId] -= amountPerPerson
       })
     })
@@ -882,6 +1076,28 @@ export default function ExpenseTracker({ userId }: { userId: string }) {
 
   return (
     <>
+      {needsDatabaseUpdate && userRole === "admin" && (
+        <Alert className="mb-4 bg-amber-50 border-amber-200">
+          <AlertTitle className="text-amber-800 flex items-center">
+            <Database className="h-4 w-4 mr-2" /> Cần cập nhật cơ sở dữ liệu
+          </AlertTitle>
+          <AlertDescription className="text-amber-700">
+            <p className="mb-2">
+              Cơ sở dữ liệu cần được cập nhật để hỗ trợ tính năng phân quyền. Chỉ quản trị viên mới có thể thực hiện cập
+              nhật này.
+            </p>
+            <Button
+              variant="outline"
+              className="bg-white border-amber-300 text-amber-800 hover:bg-amber-100"
+              onClick={updateDatabase}
+              disabled={isUpdatingDatabase}
+            >
+              {isUpdatingDatabase ? "Đang cập nhật..." : "Cập nhật cơ sở dữ liệu"}
+            </Button>
+          </AlertDescription>
+        </Alert>
+      )}
+
       <div className="flex justify-between items-center mb-6">
         <div className="flex items-center gap-4">
           {households.length > 1 && (
@@ -900,6 +1116,11 @@ export default function ExpenseTracker({ userId }: { userId: string }) {
           <Button variant="outline" size="sm" onClick={shareInviteCode}>
             <Share2 className="h-4 w-4 mr-2" /> Chia sẻ mã mời
           </Button>
+          {userRole === "admin" && (
+            <Badge variant="outline" className="bg-green-50">
+              Quản trị viên
+            </Badge>
+          )}
         </div>
         <Button variant="outline" size="sm" onClick={handleSignOut}>
           <LogOut className="h-4 w-4 mr-2" /> Đăng xuất
@@ -907,33 +1128,47 @@ export default function ExpenseTracker({ userId }: { userId: string }) {
       </div>
 
       <Tabs defaultValue="roommates" className="w-full">
-        <TabsList className="grid grid-cols-4 mb-8">
+        <TabsList className="grid grid-cols-6 mb-8">
           <TabsTrigger value="roommates">Thành viên</TabsTrigger>
           <TabsTrigger value="expenses">Chi tiêu</TabsTrigger>
           <TabsTrigger value="summary">Tổng kết</TabsTrigger>
           <TabsTrigger value="settlement">Thanh toán</TabsTrigger>
+          <TabsTrigger value="users">Người dùng</TabsTrigger>
+          <TabsTrigger value="dashboard">Báo cáo</TabsTrigger>
         </TabsList>
 
         {/* Roommates Tab */}
         <TabsContent value="roommates">
-          <RoomManagement rooms={rooms} onAddRoom={addRoom} onRemoveRoom={removeRoom} />
+          <RoomManagement rooms={rooms} onAddRoom={addRoom} onRemoveRoom={removeRoom} isAdmin={userRole === "admin"} />
           <RoommateManagement
             roommates={roommates}
             rooms={rooms}
             onAddRoommate={addRoommate}
             onRemoveRoommate={removeRoommate}
+            isAdmin={userRole === "admin"}
           />
         </TabsContent>
 
         {/* Expenses Tab */}
         <TabsContent value="expenses">
           <ExpenseForm roommates={roommates} rooms={rooms} onAddExpense={addExpense} />
-          <ExpenseList expenses={expenses} roommates={roommates} onRemoveExpense={removeExpense} />
+          <ExpenseList
+            expenses={expenses}
+            roommates={roommates}
+            onRemoveExpense={removeExpense}
+            currentUserId={userId}
+            isAdmin={userRole === "admin"}
+          />
         </TabsContent>
 
         {/* Summary Tab */}
         <TabsContent value="summary">
-          <SummaryView totalExpenses={totalExpenses} balances={calculateBalances()} roommates={roommates} />
+          <SummaryView
+            totalExpenses={totalExpenses}
+            balances={calculateBalances()}
+            roommates={roommates}
+            expenses={expenses}
+          />
         </TabsContent>
 
         {/* Settlement Tab */}
@@ -947,8 +1182,22 @@ export default function ExpenseTracker({ userId }: { userId: string }) {
             expenses={expenses}
           />
         </TabsContent>
+
+        {/* Users Tab */}
+        <TabsContent value="users">
+          <UserManagement
+            householdId={currentHousehold}
+            currentUserId={userId}
+            isAdmin={userRole === "admin"}
+            roommates={roommates}
+          />
+        </TabsContent>
+
+        {/* Monthly Dashboard Tab */}
+        <TabsContent value="dashboard">
+          <MonthlyDashboard expenses={expenses} roommates={roommates} />
+        </TabsContent>
       </Tabs>
     </>
   )
 }
-
