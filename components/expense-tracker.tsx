@@ -18,6 +18,8 @@ import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import UserManagement from "./user-management"
+// Thêm QRCodeManager vào import
+import QRCodeManager from "./qr-code-manager"
 
 // Types
 export interface Roommate {
@@ -66,7 +68,7 @@ export default function ExpenseTracker({ userId }: { userId: string }) {
   const [showJoinHousehold, setShowJoinHousehold] = useState(false)
   const [userRole, setUserRole] = useState<"admin" | "member">("member") // Thêm state lưu vai trò của người dùng
   const [needsDatabaseUpdate, setNeedsDatabaseUpdate] = useState(false)
-  const [isUpdatingDatabase, setIsUpdatingDatabase] = useState(false)
+  //const [isUpdatingDatabase, setIsUpdatingDatabase] = useState(isUpdatingDatabase)
 
   const supabase = createClient()
   const { toast } = useToast()
@@ -314,52 +316,8 @@ export default function ExpenseTracker({ userId }: { userId: string }) {
     }
   }
 
-  // Cập nhật cơ sở dữ liệu để thêm cột created_by
-  const updateDatabase = async () => {
-    if (!userRole || userRole !== "admin") {
-      toast({
-        title: "Không có quyền",
-        description: "Chỉ quản trị viên mới có thể cập nhật cơ sở dữ liệu.",
-        variant: "destructive",
-      })
-      return
-    }
 
-    setIsUpdatingDatabase(true)
-    try {
-      // Gọi API route để thực thi SQL
-      const response = await fetch("/api/database/update-schema", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-      })
 
-      if (!response.ok) {
-        const errorData = await response.json()
-        throw new Error(errorData.error || "Failed to update database")
-      }
-
-      toast({
-        title: "Thành công",
-        description: "Đã cập nhật cơ sở dữ liệu. Vui lòng tải lại trang để áp dụng thay đổi.",
-      })
-
-      // Tải lại trang sau 2 giây
-      setTimeout(() => {
-        window.location.reload()
-      }, 2000)
-    } catch (error) {
-      console.error("Error updating database:", error)
-      toast({
-        title: "Lỗi",
-        description: "Không thể cập nhật cơ sở dữ liệu. Vui lòng thử lại sau.",
-        variant: "destructive",
-      })
-    } finally {
-      setIsUpdatingDatabase(false)
-    }
-  }
 
   // Create a new household
   const createHousehold = async () => {
@@ -785,7 +743,7 @@ export default function ExpenseTracker({ userId }: { userId: string }) {
   }
 
   // Add new expense
-  const addExpense = async (expense: Omit<Expense, "id" | "date" | "household_id" | "created_by">) => {
+  const addExpense = async (expense: Omit<Expense, "id" | "household_id" | "created_by">) => {
     if (!currentHousehold) return
 
     try {
@@ -804,6 +762,7 @@ export default function ExpenseTracker({ userId }: { userId: string }) {
         amount: Math.round(expense.amount), // Round to whole number
         paid_by: expense.paidBy,
         household_id: currentHousehold,
+        created_at: expense.date.toISOString(), // Sử dụng ngày được chọn
       }
 
       // Thêm created_by nếu cơ sở dữ liệu đã được cập nhật
@@ -850,7 +809,7 @@ export default function ExpenseTracker({ userId }: { userId: string }) {
         description: expense.description.trim(),
         amount: Math.round(expense.amount),
         paidBy: expense.paidBy,
-        date: new Date(),
+        date: expense.date, // Sử dụng ngày được chọn
         sharedWith: sharedWith,
         household_id: currentHousehold,
         created_by: !needsDatabaseUpdate ? userId : undefined,
@@ -1076,28 +1035,6 @@ export default function ExpenseTracker({ userId }: { userId: string }) {
 
   return (
     <>
-      {needsDatabaseUpdate && userRole === "admin" && (
-        <Alert className="mb-4 bg-amber-50 border-amber-200">
-          <AlertTitle className="text-amber-800 flex items-center">
-            <Database className="h-4 w-4 mr-2" /> Cần cập nhật cơ sở dữ liệu
-          </AlertTitle>
-          <AlertDescription className="text-amber-700">
-            <p className="mb-2">
-              Cơ sở dữ liệu cần được cập nhật để hỗ trợ tính năng phân quyền. Chỉ quản trị viên mới có thể thực hiện cập
-              nhật này.
-            </p>
-            <Button
-              variant="outline"
-              className="bg-white border-amber-300 text-amber-800 hover:bg-amber-100"
-              onClick={updateDatabase}
-              disabled={isUpdatingDatabase}
-            >
-              {isUpdatingDatabase ? "Đang cập nhật..." : "Cập nhật cơ sở dữ liệu"}
-            </Button>
-          </AlertDescription>
-        </Alert>
-      )}
-
       <div className="flex justify-between items-center mb-6">
         <div className="flex items-center gap-4">
           {households.length > 1 && (
@@ -1126,17 +1063,16 @@ export default function ExpenseTracker({ userId }: { userId: string }) {
           <LogOut className="h-4 w-4 mr-2" /> Đăng xuất
         </Button>
       </div>
-
       <Tabs defaultValue="roommates" className="w-full">
-        <TabsList className="grid grid-cols-6 mb-8">
+        <TabsList className="grid grid-cols-7 mb-8">
           <TabsTrigger value="roommates">Thành viên</TabsTrigger>
           <TabsTrigger value="expenses">Chi tiêu</TabsTrigger>
           <TabsTrigger value="summary">Tổng kết</TabsTrigger>
           <TabsTrigger value="settlement">Thanh toán</TabsTrigger>
           <TabsTrigger value="users">Người dùng</TabsTrigger>
           <TabsTrigger value="dashboard">Báo cáo</TabsTrigger>
+          <TabsTrigger value="qrcode">Mã QR</TabsTrigger>
         </TabsList>
-
         {/* Roommates Tab */}
         <TabsContent value="roommates">
           <RoomManagement rooms={rooms} onAddRoom={addRoom} onRemoveRoom={removeRoom} isAdmin={userRole === "admin"} />
@@ -1148,7 +1084,6 @@ export default function ExpenseTracker({ userId }: { userId: string }) {
             isAdmin={userRole === "admin"}
           />
         </TabsContent>
-
         {/* Expenses Tab */}
         <TabsContent value="expenses">
           <ExpenseForm roommates={roommates} rooms={rooms} onAddExpense={addExpense} />
@@ -1160,7 +1095,6 @@ export default function ExpenseTracker({ userId }: { userId: string }) {
             isAdmin={userRole === "admin"}
           />
         </TabsContent>
-
         {/* Summary Tab */}
         <TabsContent value="summary">
           <SummaryView
@@ -1170,7 +1104,6 @@ export default function ExpenseTracker({ userId }: { userId: string }) {
             expenses={expenses}
           />
         </TabsContent>
-
         {/* Settlement Tab */}
         <TabsContent value="settlement">
           <SettlementView
@@ -1182,7 +1115,6 @@ export default function ExpenseTracker({ userId }: { userId: string }) {
             expenses={expenses}
           />
         </TabsContent>
-
         {/* Users Tab */}
         <TabsContent value="users">
           <UserManagement
@@ -1192,10 +1124,18 @@ export default function ExpenseTracker({ userId }: { userId: string }) {
             roommates={roommates}
           />
         </TabsContent>
-
         {/* Monthly Dashboard Tab */}
         <TabsContent value="dashboard">
           <MonthlyDashboard expenses={expenses} roommates={roommates} />
+        </TabsContent>
+        {/* QR Code Tab */}
+        <TabsContent value="qrcode">
+          <QRCodeManager
+            roommates={roommates}
+            householdId={currentHousehold}
+            isAdmin={userRole === "admin"}
+            currentUserId={userId}
+          />
         </TabsContent>
       </Tabs>
     </>

@@ -1,12 +1,14 @@
 "use client"
 
+import { Label } from "@/components/ui/label"
+
 import { useState, useEffect, useMemo } from "react"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { FileSpreadsheet, PlusCircle, Filter, ChevronDown, ChevronUp, Search, X } from "lucide-react"
+import { FileSpreadsheet, PlusCircle, Filter, ChevronDown, ChevronUp, Search, X, Eye, EyeOff } from "lucide-react"
 import {
   Dialog,
   DialogContent,
@@ -91,6 +93,7 @@ export default function SettlementView({
   const [searchTerm, setSearchTerm] = useState("")
   const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>({})
   const [viewMode, setViewMode] = useState<"list" | "grouped">("grouped")
+  const [hidePaid, setHidePaid] = useState(false)
 
   const supabase = createClient()
   const { toast } = useToast()
@@ -428,8 +431,25 @@ export default function SettlementView({
       )
     }
 
+    // Lọc các khoản đã thanh toán nếu hidePaid = true
+    if (hidePaid) {
+      result = result.filter((t) => {
+        const id = getTransactionId(t.from, t.to, t.expenseId)
+        return !paymentStatuses[id]
+      })
+    }
+
     return result
-  }, [detailedTransactions, activeTab, selectedMonth, selectedPayer, selectedReceiver, paymentStatuses, searchTerm])
+  }, [
+    detailedTransactions,
+    activeTab,
+    selectedMonth,
+    selectedPayer,
+    selectedReceiver,
+    paymentStatuses,
+    searchTerm,
+    hidePaid,
+  ])
 
   // Nhóm các giao dịch theo mô tả
   const groupedTransactions = useMemo(() => {
@@ -669,6 +689,11 @@ export default function SettlementView({
                   </select>
                 </div>
 
+                <div className="mb-2 flex items-center space-x-2">
+                  <Checkbox id="hidePaid" checked={hidePaid} onCheckedChange={(checked) => setHidePaid(!!checked)} />
+                  <Label htmlFor="hidePaid">Ẩn khoản đã thanh toán</Label>
+                </div>
+
                 <Button
                   variant="outline"
                   size="sm"
@@ -677,6 +702,7 @@ export default function SettlementView({
                     setSelectedPayer(null)
                     setSelectedReceiver(null)
                     setSelectedMonth("all")
+                    setHidePaid(false)
                   }}
                 >
                   Xóa bộ lọc
@@ -763,6 +789,24 @@ export default function SettlementView({
                             </Button>
                           </>
                         )}
+                      </div>
+                      <div className="flex items-center space-x-2">
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => setHidePaid(!hidePaid)}
+                          className={hidePaid ? "bg-muted" : ""}
+                        >
+                          {hidePaid ? (
+                            <>
+                              <Eye className="h-4 w-4 mr-1" /> Hiện tất cả
+                            </>
+                          ) : (
+                            <>
+                              <EyeOff className="h-4 w-4 mr-1" /> Ẩn đã thanh toán
+                            </>
+                          )}
+                        </Button>
                       </div>
                     </div>
                   </div>

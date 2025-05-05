@@ -1,18 +1,22 @@
 "use client"
 
 import { useState } from "react"
-import { Plus } from "lucide-react"
+import { Plus, Calendar } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Checkbox } from "@/components/ui/checkbox"
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
+import { Calendar as CalendarComponent } from "@/components/ui/calendar"
+import { format } from "date-fns"
+import { vi } from "date-fns/locale"
 import type { Roommate, Expense } from "./expense-tracker"
 
 interface ExpenseFormProps {
   roommates: Roommate[]
   rooms: string[]
-  onAddExpense: (expense: Omit<Expense, "id" | "date">) => void
+  onAddExpense: (expense: Omit<Expense, "id">) => void
 }
 
 export default function ExpenseForm({ roommates, rooms, onAddExpense }: ExpenseFormProps) {
@@ -21,14 +25,16 @@ export default function ExpenseForm({ roommates, rooms, onAddExpense }: ExpenseF
     amount: string
     paidBy: string
     sharedWith: string[]
+    date: Date
   }>({
     description: "",
     amount: "",
     paidBy: "",
     sharedWith: [],
+    date: new Date(),
   })
 
-  const handleExpenseChange = (field: string, value: string | string[]) => {
+  const handleExpenseChange = (field: string, value: string | string[] | Date) => {
     setNewExpense({
       ...newExpense,
       [field]: value,
@@ -59,6 +65,7 @@ export default function ExpenseForm({ roommates, rooms, onAddExpense }: ExpenseF
       amount: Number.parseFloat(newExpense.amount),
       paidBy: newExpense.paidBy,
       sharedWith: newExpense.sharedWith,
+      date: newExpense.date,
     })
 
     setNewExpense({
@@ -66,6 +73,7 @@ export default function ExpenseForm({ roommates, rooms, onAddExpense }: ExpenseF
       amount: "",
       paidBy: "",
       sharedWith: [],
+      date: new Date(),
     })
   }
 
@@ -95,6 +103,26 @@ export default function ExpenseForm({ roommates, rooms, onAddExpense }: ExpenseF
               value={newExpense.amount}
               onChange={(e) => handleExpenseChange("amount", e.target.value)}
             />
+          </div>
+
+          <div className="grid gap-2">
+            <Label htmlFor="date">Ngày chi tiêu</Label>
+            <Popover>
+              <PopoverTrigger asChild>
+                <Button variant="outline" className="w-full justify-start text-left font-normal">
+                  <Calendar className="mr-2 h-4 w-4" />
+                  {format(newExpense.date, "dd/MM/yyyy", { locale: vi })}
+                </Button>
+              </PopoverTrigger>
+              <PopoverContent className="w-auto p-0">
+                <CalendarComponent
+                  mode="single"
+                  selected={newExpense.date}
+                  onSelect={(date) => handleExpenseChange("date", date || new Date())}
+                  initialFocus
+                />
+              </PopoverContent>
+            </Popover>
           </div>
 
           <div className="grid gap-2">

@@ -14,6 +14,13 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
     }
 
+    // Thêm vào danh sách SQL cần thực thi
+    const sqlFiles = [
+      "add_created_by_column.sql",
+      "create_payment_statuses_table.sql",
+      "create_roommate_qrcodes_table.sql",
+    ]
+
     // Thực thi SQL để thêm cột created_by
     const sql = `
       -- Thêm cột created_by vào bảng expenses nếu chưa tồn tại
