@@ -347,7 +347,16 @@ export default function ExpenseList({
                       ) : (
                         <ul className="list-disc list-inside text-sm pl-2">
                           {expense.sharedWith.map((id) => (
-                            <li key={id}>{getRoommateName(id)}</li>
+                            <li key={id}>
+                              {getRoommateName(id)}
+                              {expense.shareMultipliers &&
+                                expense.shareMultipliers[id] &&
+                                expense.shareMultipliers[id] > 1 && (
+                                  <span className="text-sm text-muted-foreground ml-1">
+                                    (x{expense.shareMultipliers[id]})
+                                  </span>
+                                )}
+                            </li>
                           ))}
                         </ul>
                       )}
