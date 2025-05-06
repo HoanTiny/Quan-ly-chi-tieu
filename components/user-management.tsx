@@ -551,9 +551,13 @@ export default function UserManagement({
 
     try {
       // Cập nhật liên kết trong cơ sở dữ liệu
+      // Sửa lỗi: Nếu selectedRoommateId là "none", đặt giá trị là null
+      const linkedRoommateId =
+        selectedRoommateId === 'none' ? null : selectedRoommateId || null;
+
       const { error } = await supabase
         .from('household_members')
-        .update({ linked_roommate_id: selectedRoommateId || null })
+        .update({ linked_roommate_id: linkedRoommateId })
         .eq('household_id', userToLink.household_id)
         .eq('user_id', userToLink.id);
 
@@ -570,7 +574,7 @@ export default function UserManagement({
 
       // Tìm tên của roommate được liên kết (nếu có)
       let linkedRoommateName = undefined;
-      if (selectedRoommateId) {
+      if (selectedRoommateId && selectedRoommateId !== 'none') {
         const linkedRoommate = roommates.find(
           (r) => r.id === selectedRoommateId
         );
@@ -588,7 +592,10 @@ export default function UserManagement({
           ) {
             return {
               ...user,
-              linked_roommate_id: selectedRoommateId || undefined,
+              linked_roommate_id:
+                selectedRoommateId === 'none'
+                  ? undefined
+                  : selectedRoommateId || undefined,
               linked_roommate_name: linkedRoommateName,
             };
           }
@@ -598,9 +605,10 @@ export default function UserManagement({
 
       toast({
         title: 'Thành công',
-        description: selectedRoommateId
-          ? `Đã liên kết người dùng với thành viên ${linkedRoommateName}.`
-          : 'Đã hủy liên kết người dùng với thành viên.',
+        description:
+          selectedRoommateId && selectedRoommateId !== 'none'
+            ? `Đã liên kết người dùng với thành viên ${linkedRoommateName}.`
+            : 'Đã hủy liên kết người dùng với thành viên.',
       });
 
       setShowLinkDialog(false);
@@ -666,7 +674,7 @@ export default function UserManagement({
 
   return (
     <Card>
-      <CardHeader className="flex flex-col md:flex-row items-center justify-between">
+      <CardHeader className="flex flex-row items-center justify-between">
         <div>
           <CardTitle>Quản lý người dùng</CardTitle>
           <CardDescription>

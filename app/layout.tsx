@@ -1,27 +1,31 @@
-import type React from "react"
-import "./globals.css"
-import { Inter } from "next/font/google"
-import { Toaster } from "@/components/toaster"
+// app/layout.tsx
+import ClientToaster from '@/components/clientToaster';
+import './globals.css';
+import { Inter } from 'next/font/google';
 
-const inter = Inter({ subsets: ["latin"] })
+const inter = Inter({ subsets: ['latin'] });
 
 export const metadata = {
-  title: "Roommate Expense Tracker",
-  description: "Track and split expenses with your roommates",
-    generator: 'v0.dev'
-}
+  title: 'Quản lý chi tiêu',
+  description: 'Track and split expenses with your roommates',
+  icons: {
+    icon: '/faicon.jpg', // đường dẫn tới icon thường
+    shortcut: '/faicon.jpg', // icon cho shortcut
+    apple: '/faicon.jpg', // icon cho iOS
+  },
+};
 
 export default function RootLayout({
   children,
 }: {
-  children: React.ReactNode
+  children: React.ReactNode;
 }) {
   return (
-    <html lang="vi">
+    <html lang="en" suppressHydrationWarning>
       <body className={inter.className}>
         {children}
-        <Toaster />
+        <ClientToaster />
       </body>
     </html>
-  )
+  );
 }

@@ -423,11 +423,7 @@ export default function QRCodeManager({
                 return {
                   ...qr,
                   account_number: accountNumber,
-                  qr_label: accountBank
-                    ? `${accountBank} - ${accountNumber.substring(
-                        accountNumber.length - 4
-                      )}`
-                    : qr.qr_label,
+                  qr_label: accountBank ? `${accountBank}` : qr.qr_label,
                 };
               }
               return qr;
@@ -649,7 +645,8 @@ export default function QRCodeManager({
                               >
                                 <div className="mb-2 text-sm font-medium">
                                   {qrCode.qr_label ||
-                                    getQRTypeLabel(qrCode.qr_type)}
+                                    getQRTypeLabel(qrCode.qr_type)}{' '}
+                                  - {qrCode.account_number}
                                 </div>
 
                                 {qrCode.qr_image_url ? (
