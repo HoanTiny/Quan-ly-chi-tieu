@@ -1108,13 +1108,6 @@ function DebtListView({
                   src={getQRCodeURL(selectedCreditor!) || '/placeholder.svg'}
                   alt={`QR code for ${getRoommateName(selectedCreditor!)}`}
                   className="w-[350px] h-[350px] object-contain cursor-pointer"
-                  onClick={() => {
-                    const newWindow = window.open(
-                      getQRCodeURL(selectedCreditor!) || '/placeholder.svg',
-                      '_blank'
-                    );
-                    if (newWindow) newWindow.focus();
-                  }}
                 />
               ) : (
                 <p className="text-muted-foreground text-center">
