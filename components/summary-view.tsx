@@ -1107,7 +1107,7 @@ function DebtListView({
                 <img
                   src={getQRCodeURL(selectedCreditor!) || '/placeholder.svg'}
                   alt={`QR code for ${getRoommateName(selectedCreditor!)}`}
-                  className="w-[250px] h-[250px] object-contain"
+                  className="w-[350px] h-[350px] object-contain cursor-pointer"
                 />
               ) : (
                 <p className="text-muted-foreground text-center">
