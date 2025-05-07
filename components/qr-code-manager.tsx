@@ -397,9 +397,7 @@ export default function QRCodeManager({
         .update({
           account_number: accountNumber,
           qr_label: accountBank
-            ? `${accountBank} - ${accountNumber.substring(
-                accountNumber.length - 4
-              )}`
+            ? `${accountBank}`
             : selectedQRCodeForAccount.qr_label,
         })
         .eq('id', selectedQRCodeForAccount.id);
@@ -644,9 +642,8 @@ export default function QRCodeManager({
                                 className="border rounded-md p-3 flex flex-col items-center"
                               >
                                 <div className="mb-2 text-sm font-medium">
-                                  {qrCode.qr_label ||
-                                    getQRTypeLabel(qrCode.qr_type)}{' '}
-                                  - {qrCode.account_number}
+                                  {getQRTypeLabel(qrCode.qr_type)}{' '}
+                                  {qrCode.qr_label}- {qrCode.account_number}
                                 </div>
 
                                 {qrCode.qr_image_url ? (

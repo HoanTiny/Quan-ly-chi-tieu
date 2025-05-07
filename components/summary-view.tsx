@@ -911,7 +911,6 @@ function DebtListView({
 
   // Kiểm tra xem người dùng có QR code không
   const hasQRCode = (roommateId: string) => {
-    console.log('first', qrCodes, roommateId);
     return qrCodes && qrCodes[roommateId] && qrCodes[roommateId].length > 0;
   };
 
