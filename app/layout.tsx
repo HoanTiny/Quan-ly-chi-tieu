@@ -12,6 +12,7 @@ export const metadata = {
     shortcut: '/faicon.jpg', // icon cho shortcut
     apple: '/faicon.jpg', // icon cho iOS
   },
+    generator: 'v0.dev'
 };
 
 export default function RootLayout({

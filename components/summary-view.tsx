@@ -1,36 +1,18 @@
-'use client';
+"use client"
 
-import type React from 'react';
+import type React from "react"
 
-import { useState, useMemo, useRef } from 'react';
-import {
-  Card,
-  CardContent,
-  CardHeader,
-  CardTitle,
-  CardDescription,
-} from '@/components/ui/card';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { Badge } from '@/components/ui/badge';
-import { Button } from '@/components/ui/button';
-import {
-  Filter,
-  ArrowRight,
-  ArrowDown,
-  ArrowUp,
-  X,
-  Share2,
-  QrCode,
-  Download,
-} from 'lucide-react';
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuTrigger,
-} from '@/components/ui/dropdown-menu';
-import { ScrollArea } from '@/components/ui/scroll-area';
-import { formatCurrency } from '@/lib/utils';
-import type { Roommate, Expense } from './expense-tracker';
+import { useState, useMemo, useRef, useEffect } from "react"
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { Badge } from "@/components/ui/badge"
+import { Button } from "@/components/ui/button"
+import { Filter, ArrowRight, ArrowDown, ArrowUp, X, Share2, QrCode, Download, Check } from "lucide-react"
+import { DropdownMenu, DropdownMenuContent, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
+import { ScrollArea } from "@/components/ui/scroll-area"
+import { Checkbox } from "@/components/ui/checkbox"
+import { formatCurrency } from "@/lib/utils"
+import type { Roommate, Expense } from "./expense-tracker"
 import {
   Dialog,
   DialogContent,
@@ -38,19 +20,22 @@ import {
   DialogHeader,
   DialogTitle,
   DialogFooter,
-} from '@/components/ui/dialog';
+} from "@/components/ui/dialog"
+import { createClient } from "@/lib/supabase/client"
+import { useToast } from "@/hooks/use-toast"
 
 interface RoommateQRCode {
-  roommate_id: string;
-  qr_image_url: string;
+  roommate_id: string
+  qr_image_url: string
 }
 
 interface SummaryViewProps {
-  totalExpenses: number;
-  balances: Record<string, number>;
-  roommates: Roommate[];
-  expenses: Expense[];
-  qrCodes?: Record<string, RoommateQRCode[]>;
+  totalExpenses: number
+  balances: Record<string, number>
+  roommates: Roommate[]
+  expenses: Expense[]
+  qrCodes?: Record<string, RoommateQRCode[]>
+  householdId: string
 }
 
 export default function SummaryView({
@@ -59,90 +44,261 @@ export default function SummaryView({
   roommates,
   expenses,
   qrCodes,
+  householdId,
 }: SummaryViewProps) {
-  const [selectedRoommate, setSelectedRoommate] = useState<string | null>(null);
-  const [filterType, setFilterType] = useState<'debts' | 'credits' | null>(
-    null
-  );
-  const [expandedExpenses, setExpandedExpenses] = useState<
-    Record<string, boolean>
-  >({});
-  const [activeTab, setActiveTab] = useState('balances');
-  const debtListRef = useRef<HTMLDivElement>(null);
+  const [selectedRoommate, setSelectedRoommate] = useState<string | null>(null)
+  const [filterType, setFilterType] = useState<"debts" | "credits" | null>(null)
+  const [expandedExpenses, setExpandedExpenses] = useState<Record<string, boolean>>({})
+  const [activeTab, setActiveTab] = useState("balances")
+  const [paymentStatuses, setPaymentStatuses] = useState<Record<string, boolean>>({})
+  const [isLoading, setIsLoading] = useState(false)
+
+  const supabase = createClient()
+  const { toast } = useToast()
+
+  // Tạo ID duy nhất cho mỗi giao dịch
+  const getTransactionId = (from: string, to: string, expenseId?: string) => {
+    return expenseId ? `${from}-${to}-${expenseId}` : `${from}-${to}`
+  }
+
+  // Tải trạng thái thanh toán từ localStorage hoặc database
+  useEffect(() => {
+    const loadPaymentStatuses = async () => {
+      if (!householdId) return
+
+      // Kiểm tra localStorage trước
+      if (typeof window !== "undefined") {
+        const localData = localStorage.getItem(`payment_status_${householdId}`)
+        if (localData) {
+          try {
+            setPaymentStatuses(JSON.parse(localData))
+          } catch (e) {
+            console.error("Lỗi phân tích dữ liệu cục bộ:", e)
+          }
+        }
+      }
+
+      // Thử tải từ database
+      try {
+        const { data, error } = await supabase.from("payment_statuses").select("*").eq("household_id", householdId)
+
+        if (!error && data) {
+          const statuses: Record<string, boolean> = {}
+          data.forEach((item: any) => {
+            const transactionId = getTransactionId(item.from_id, item.to_id, item.expense_id)
+            statuses[transactionId] = item.is_paid
+          })
+          setPaymentStatuses(statuses)
+        }
+      } catch (error) {
+        console.error("Lỗi khi tải trạng thái thanh toán:", error)
+      }
+    }
+
+    loadPaymentStatuses()
+  }, [householdId, supabase])
+
+  // Cập nhật trạng thái thanh toán
+  const updatePaymentStatus = async (from: string, to: string, amount: number, isPaid: boolean, expenseId?: string) => {
+    setIsLoading(true)
+    const transactionId = getTransactionId(from, to, expenseId)
+
+    try {
+      // Cập nhật localStorage
+      const newStatuses = { ...paymentStatuses, [transactionId]: isPaid }
+      setPaymentStatuses(newStatuses)
+
+      if (typeof window !== "undefined") {
+        localStorage.setItem(`payment_status_${householdId}`, JSON.stringify(newStatuses))
+      }
+
+      // Thử cập nhật database
+      try {
+        // Kiểm tra xem bản ghi đã tồn tại chưa
+        let query = supabase
+          .from("payment_statuses")
+          .select("*")
+          .eq("from_id", from)
+          .eq("to_id", to)
+          .eq("household_id", householdId)
+
+        if (expenseId) {
+          query = query.eq("expense_id", expenseId)
+        }
+
+        const { data: existingData, error: checkError } = await query.maybeSingle()
+
+        if (!checkError) {
+          if (existingData) {
+            // Cập nhật bản ghi hiện có
+            await supabase.from("payment_statuses").update({ is_paid: isPaid }).eq("id", existingData.id)
+          } else {
+            // Tạo bản ghi mới
+            const newRecord: any = {
+              from_id: from,
+              to_id: to,
+              amount: amount,
+              is_paid: isPaid,
+              household_id: householdId,
+            }
+
+            if (expenseId) {
+              newRecord.expense_id = expenseId
+            }
+
+            await supabase.from("payment_statuses").insert([newRecord])
+          }
+        }
+      } catch (dbError) {
+        console.log("Database update failed, using local storage only")
+      }
+
+      toast({
+        title: "Đã cập nhật",
+        description: isPaid ? "Đã đánh dấu thanh toán" : "Đã bỏ đánh dấu thanh toán",
+      })
+    } catch (error) {
+      console.error("Lỗi khi cập nhật trạng thái thanh toán:", error)
+      toast({
+        title: "Lỗi",
+        description: "Không thể cập nhật trạng thái thanh toán",
+        variant: "destructive",
+      })
+    } finally {
+      setIsLoading(false)
+    }
+  }
 
   // Tính toán số dư dương (tín dụng) và số dư âm (nợ) cho mỗi thành viên
-  const { positiveBalances, negativeBalances, totalPositive, totalNegative } =
-    useMemo(() => {
-      const positive: Record<string, number> = {};
-      const negative: Record<string, number> = {};
-      let totalPos = 0;
-      let totalNeg = 0;
+  const { positiveBalances, negativeBalances, totalPositive, totalNegative } = useMemo(() => {
+    const positive: Record<string, number> = {}
+    const negative: Record<string, number> = {}
+    let totalPos = 0
+    let totalNeg = 0
 
-      Object.entries(balances).forEach(([id, balance]) => {
-        if (balance > 0) {
-          positive[id] = balance;
-          totalPos += balance;
-        } else if (balance < 0) {
-          negative[id] = Math.abs(balance);
-          totalNeg += Math.abs(balance);
+    // Tính toán lại balances chỉ từ những chi phí chưa thanh toán
+    const unpaidBalances: Record<string, number> = {}
+
+    // Khởi tạo balance cho tất cả roommates
+    roommates.forEach((roommate) => {
+      unpaidBalances[roommate.id] = 0
+    })
+
+    // Tính toán balance từ những chi phí chưa thanh toán
+    expenses.forEach((expense) => {
+      const paidBy = expense.paidBy
+      const sharedWith = expense.sharedWith
+      const multipliers = expense.shareMultipliers || {}
+
+      // Bỏ qua nếu không có ai chia sẻ
+      if (sharedWith.length === 0) return
+
+      // Tính tổng hệ số
+      let totalMultiplier = 0
+      sharedWith.forEach((roommateId) => {
+        totalMultiplier += multipliers[roommateId] || 1
+      })
+
+      // Kiểm tra từng giao dịch giữa người trả tiền và người chia sẻ
+      let hasUnpaidTransactions = false
+      sharedWith.forEach((roommateId) => {
+        if (roommateId === paidBy) return // Bỏ qua nếu người chia sẻ cũng là người trả tiền
+
+        const transactionId = getTransactionId(roommateId, paidBy, expense.id)
+        if (!paymentStatuses[transactionId]) {
+          hasUnpaidTransactions = true
         }
-      });
+      })
 
-      return {
-        positiveBalances: positive,
-        negativeBalances: negative,
-        totalPositive: totalPos,
-        totalNegative: totalNeg,
-      };
-    }, [balances]);
+      // Chỉ tính những chi phí có giao dịch chưa thanh toán
+      if (!hasUnpaidTransactions) return
+
+      // Người trả tiền được cộng số tiền đã chi (chỉ tính phần chưa thanh toán)
+      unpaidBalances[paidBy] += expense.amount
+
+      // Trừ số tiền chia sẻ cho mỗi người (chỉ trừ cho những người chưa thanh toán)
+      sharedWith.forEach((roommateId) => {
+        if (roommateId === paidBy) return // Bỏ qua nếu người chia sẻ cũng là người trả tiền
+
+        const transactionId = getTransactionId(roommateId, paidBy, expense.id)
+        if (!paymentStatuses[transactionId]) {
+          // Chỉ tính cho những giao dịch chưa thanh toán
+          const roommateMultiplier = multipliers[roommateId] || 1
+          const amountForRoommate = Math.round((expense.amount * roommateMultiplier) / totalMultiplier)
+          unpaidBalances[roommateId] -= amountForRoommate
+        }
+      })
+    })
+
+    // Phân loại thành positive và negative balances
+    Object.entries(unpaidBalances).forEach(([id, balance]) => {
+      if (balance > 0) {
+        positive[id] = balance
+        totalPos += balance
+      } else if (balance < 0) {
+        negative[id] = Math.abs(balance)
+        totalNeg += Math.abs(balance)
+      }
+    })
+
+    return {
+      positiveBalances: positive,
+      negativeBalances: negative,
+      totalPositive: totalPos,
+      totalNegative: totalNeg,
+    }
+  }, [roommates, expenses, paymentStatuses])
 
   // Tạo danh sách chi tiết khoản nợ giữa các thành viên
   const detailedDebts = useMemo(() => {
     const result: {
-      from: string;
-      to: string;
-      amount: number;
+      from: string
+      to: string
+      amount: number
       details: {
-        description: string;
-        amount: number;
-        date: Date;
-        multiplier?: number;
-      }[];
-    }[] = [];
+        description: string
+        amount: number
+        date: Date
+        multiplier?: number
+        expenseId: string
+        isPaid: boolean
+      }[]
+    }[] = []
 
     // Nếu không có bộ lọc, trả về danh sách trống
-    if (!selectedRoommate) return result;
+    if (!selectedRoommate) return result
 
     // Lọc các chi phí liên quan đến thành viên đã chọn
     expenses.forEach((expense) => {
-      const paidBy = expense.paidBy;
-      const sharedWith = expense.sharedWith;
-      const multipliers = expense.shareMultipliers || {};
+      const paidBy = expense.paidBy
+      const sharedWith = expense.sharedWith
+      const multipliers = expense.shareMultipliers || {}
 
       // Bỏ qua nếu không có ai chia sẻ
-      if (sharedWith.length === 0) return;
+      if (sharedWith.length === 0) return
 
       // Tính tổng hệ số
-      let totalMultiplier = 0;
+      let totalMultiplier = 0
       sharedWith.forEach((roommateId) => {
-        totalMultiplier += multipliers[roommateId] || 1;
-      });
+        totalMultiplier += multipliers[roommateId] || 1
+      })
 
       // Trường hợp 1: Thành viên đã chọn là người trả tiền (có người khác nợ họ)
-      if (filterType === 'credits' && paidBy === selectedRoommate) {
+      if (filterType === "credits" && paidBy === selectedRoommate) {
         sharedWith.forEach((roommateId) => {
           // Bỏ qua nếu người chia sẻ cũng là người trả tiền
-          if (roommateId === paidBy) return;
+          if (roommateId === paidBy) return
 
-          const roommateMultiplier = multipliers[roommateId] || 1;
-          const amountForRoommate = Math.round(
-            (expense.amount * roommateMultiplier) / totalMultiplier
-          );
+          const roommateMultiplier = multipliers[roommateId] || 1
+          const amountForRoommate = Math.round((expense.amount * roommateMultiplier) / totalMultiplier)
+          const transactionId = getTransactionId(roommateId, paidBy, expense.id)
+          const isPaid = paymentStatuses[transactionId] || false
+
+          // CHỈ HIỂN THỊ NHỮNG KHOẢN CHƯA THANH TOÁN
+          if (isPaid) return
 
           // Tìm khoản nợ hiện có hoặc tạo mới
-          const debtIndex = result.findIndex(
-            (debt) => debt.from === roommateId && debt.to === paidBy
-          );
+          const debtIndex = result.findIndex((debt) => debt.from === roommateId && debt.to === paidBy)
           if (debtIndex === -1) {
             result.push({
               from: roommateId,
@@ -153,39 +309,38 @@ export default function SummaryView({
                   description: expense.description,
                   amount: amountForRoommate,
                   date: expense.date,
-                  multiplier:
-                    roommateMultiplier > 1 ? roommateMultiplier : undefined,
+                  multiplier: roommateMultiplier > 1 ? roommateMultiplier : undefined,
+                  expenseId: expense.id,
+                  isPaid,
                 },
               ],
-            });
+            })
           } else {
-            result[debtIndex].amount += amountForRoommate;
+            result[debtIndex].amount += amountForRoommate
             result[debtIndex].details.push({
               description: expense.description,
               amount: amountForRoommate,
               date: expense.date,
-              multiplier:
-                roommateMultiplier > 1 ? roommateMultiplier : undefined,
-            });
+              multiplier: roommateMultiplier > 1 ? roommateMultiplier : undefined,
+              expenseId: expense.id,
+              isPaid,
+            })
           }
-        });
+        })
       }
 
       // Trường hợp 2: Thành viên đã chọn là người chia sẻ chi phí (họ nợ người khác)
-      if (
-        filterType === 'debts' &&
-        sharedWith.includes(selectedRoommate) &&
-        paidBy !== selectedRoommate
-      ) {
-        const roommateMultiplier = multipliers[selectedRoommate] || 1;
-        const amountForRoommate = Math.round(
-          (expense.amount * roommateMultiplier) / totalMultiplier
-        );
+      if (filterType === "debts" && sharedWith.includes(selectedRoommate) && paidBy !== selectedRoommate) {
+        const roommateMultiplier = multipliers[selectedRoommate] || 1
+        const amountForRoommate = Math.round((expense.amount * roommateMultiplier) / totalMultiplier)
+        const transactionId = getTransactionId(selectedRoommate, paidBy, expense.id)
+        const isPaid = paymentStatuses[transactionId] || false
+
+        // CHỈ HIỂN THỊ NHỮNG KHOẢN CHƯA THANH TOÁN
+        if (isPaid) return
 
         // Tìm khoản nợ hiện có hoặc tạo mới
-        const debtIndex = result.findIndex(
-          (debt) => debt.from === selectedRoommate && debt.to === paidBy
-        );
+        const debtIndex = result.findIndex((debt) => debt.from === selectedRoommate && debt.to === paidBy)
         if (debtIndex === -1) {
           result.push({
             from: selectedRoommate,
@@ -196,52 +351,55 @@ export default function SummaryView({
                 description: expense.description,
                 amount: amountForRoommate,
                 date: expense.date,
-                multiplier:
-                  roommateMultiplier > 1 ? roommateMultiplier : undefined,
+                multiplier: roommateMultiplier > 1 ? roommateMultiplier : undefined,
+                expenseId: expense.id,
+                isPaid,
               },
             ],
-          });
+          })
         } else {
-          result[debtIndex].amount += amountForRoommate;
+          result[debtIndex].amount += amountForRoommate
           result[debtIndex].details.push({
             description: expense.description,
             amount: amountForRoommate,
             date: expense.date,
             multiplier: roommateMultiplier > 1 ? roommateMultiplier : undefined,
-          });
+            expenseId: expense.id,
+            isPaid,
+          })
         }
       }
-    });
+    })
 
     // Sắp xếp theo số tiền giảm dần
-    return result.sort((a, b) => b.amount - a.amount);
-  }, [selectedRoommate, filterType, expenses]);
+    return result.sort((a, b) => b.amount - a.amount)
+  }, [selectedRoommate, filterType, expenses, paymentStatuses])
 
   // Xử lý mở rộng/thu gọn chi tiết chi phí
   const toggleExpenseDetails = (debtId: string) => {
     setExpandedExpenses((prev) => ({
       ...prev,
       [debtId]: !prev[debtId],
-    }));
-  };
+    }))
+  }
 
   // Xóa bộ lọc
   const clearFilter = () => {
-    setSelectedRoommate(null);
-    setFilterType(null);
-  };
+    setSelectedRoommate(null)
+    setFilterType(null)
+  }
 
   // Lấy tên thành viên theo ID
   const getRoommateName = (id: string) => {
-    const roommate = roommates.find((r) => r.id === id);
-    return roommate ? roommate.name : 'Không xác định';
-  };
+    const roommate = roommates.find((r) => r.id === id)
+    return roommate ? roommate.name : "Không xác định"
+  }
 
   // Lấy phòng của thành viên theo ID
   const getRoommateRoom = (id: string) => {
-    const roommate = roommates.find((r) => r.id === id);
-    return roommate ? roommate.room : '';
-  };
+    const roommate = roommates.find((r) => r.id === id)
+    return roommate ? roommate.room : ""
+  }
 
   return (
     <Card>
@@ -251,20 +409,12 @@ export default function SummaryView({
           <CardDescription className="flex flex-wrap items-center gap-1">
             <span>Tổng chi tiêu: {formatCurrency(totalExpenses)}</span>
             {selectedRoommate && (
-              <Badge
-                variant="outline"
-                className="ml-2 flex items-center gap-1 mt-1 sm:mt-0"
-              >
+              <Badge variant="outline" className="ml-2 flex items-center gap-1 mt-1 sm:mt-0">
                 <span className="truncate max-w-[150px]">
                   {getRoommateName(selectedRoommate)}
-                  {filterType === 'debts' ? ' (Khoản nợ)' : ' (Khoản được nợ)'}
+                  {filterType === "debts" ? " (Khoản nợ)" : " (Khoản được nợ)"}
                 </span>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  className="h-4 w-4 ml-1 p-0"
-                  onClick={clearFilter}
-                >
+                <Button variant="ghost" size="sm" className="h-4 w-4 ml-1 p-0" onClick={clearFilter}>
                   <X className="h-3 w-3" />
                 </Button>
               </Badge>
@@ -273,12 +423,7 @@ export default function SummaryView({
         </div>
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={!roommates.length}
-              className="whitespace-nowrap"
-            >
+            <Button variant="outline" size="sm" disabled={!roommates.length} className="whitespace-nowrap">
               <Filter className="h-4 w-4 mr-2" /> Bộ lọc
             </Button>
           </DropdownMenuTrigger>
@@ -288,11 +433,11 @@ export default function SummaryView({
                 <p className="text-sm font-medium mb-1">Lọc theo thành viên:</p>
                 <select
                   className="w-full text-sm border rounded px-2 py-1"
-                  value={selectedRoommate || ''}
+                  value={selectedRoommate || ""}
                   onChange={(e) => {
-                    setSelectedRoommate(e.target.value || null);
+                    setSelectedRoommate(e.target.value || null)
                     if (e.target.value && !filterType) {
-                      setFilterType('debts');
+                      setFilterType("debts")
                     }
                   }}
                 >
@@ -311,17 +456,17 @@ export default function SummaryView({
                   <div className="flex space-x-2">
                     <Button
                       size="sm"
-                      variant={filterType === 'debts' ? 'default' : 'outline'}
+                      variant={filterType === "debts" ? "default" : "outline"}
                       className="flex-1"
-                      onClick={() => setFilterType('debts')}
+                      onClick={() => setFilterType("debts")}
                     >
                       Khoản nợ
                     </Button>
                     <Button
                       size="sm"
-                      variant={filterType === 'credits' ? 'default' : 'outline'}
+                      variant={filterType === "credits" ? "default" : "outline"}
                       className="flex-1"
-                      onClick={() => setFilterType('credits')}
+                      onClick={() => setFilterType("credits")}
                     >
                       Khoản được nợ
                     </Button>
@@ -345,9 +490,9 @@ export default function SummaryView({
       <CardContent>
         <Tabs value={activeTab} onValueChange={setActiveTab}>
           <TabsList className="grid w-full grid-cols-3 mb-4">
-            <TabsTrigger value="balances">Số dư</TabsTrigger>
-            <TabsTrigger value="details">Chi tiết</TabsTrigger>
-            <TabsTrigger value="debtList">Danh sách nợ</TabsTrigger>
+            <TabsTrigger value="balances">Số dư chưa thanh toán</TabsTrigger>
+            <TabsTrigger value="details">Chi tiết chưa thanh toán</TabsTrigger>
+            <TabsTrigger value="debtList">Danh sách nợ chưa thanh toán</TabsTrigger>
           </TabsList>
 
           <TabsContent value="balances">
@@ -356,16 +501,14 @@ export default function SummaryView({
               <Card>
                 <CardHeader className="pb-2">
                   <CardTitle className="text-lg text-green-600 flex items-center">
-                    <ArrowDown className="h-4 w-4 mr-2" /> Được nợ
+                    <ArrowDown className="h-4 w-4 mr-2" /> Được nợ (chưa thanh toán)
                   </CardTitle>
-                  <CardDescription>Những người được nợ tiền</CardDescription>
+                  <CardDescription>Những người được nợ tiền (chưa thanh toán)</CardDescription>
                 </CardHeader>
                 <CardContent>
                   <ScrollArea className="h-[200px]">
                     {Object.keys(positiveBalances).length === 0 ? (
-                      <p className="text-sm text-muted-foreground text-center py-4">
-                        Không có khoản được nợ
-                      </p>
+                      <p className="text-sm text-muted-foreground text-center py-4">Không có khoản được nợ</p>
                     ) : (
                       <div className="space-y-2">
                         {Object.entries(positiveBalances)
@@ -375,21 +518,15 @@ export default function SummaryView({
                               key={id}
                               className="flex items-center justify-between p-2 rounded-md hover:bg-muted cursor-pointer"
                               onClick={() => {
-                                setSelectedRoommate(id);
-                                setFilterType('credits');
+                                setSelectedRoommate(id)
+                                setFilterType("credits")
                               }}
                             >
                               <div className="flex flex-col">
-                                <span className="font-medium">
-                                  {getRoommateName(id)}
-                                </span>
-                                <span className="text-xs text-muted-foreground">
-                                  {getRoommateRoom(id)}
-                                </span>
+                                <span className="font-medium">{getRoommateName(id)}</span>
+                                <span className="text-xs text-muted-foreground">{getRoommateRoom(id)}</span>
                               </div>
-                              <span className="font-semibold text-green-600">
-                                {formatCurrency(balance)}
-                              </span>
+                              <span className="font-semibold text-green-600">{formatCurrency(balance)}</span>
                             </div>
                           ))}
                       </div>
@@ -397,9 +534,7 @@ export default function SummaryView({
                   </ScrollArea>
                   <div className="mt-4 pt-2 border-t flex justify-between items-center">
                     <span className="text-sm font-medium">Tổng cộng:</span>
-                    <span className="font-bold text-green-600">
-                      {formatCurrency(totalPositive)}
-                    </span>
+                    <span className="font-bold text-green-600">{formatCurrency(totalPositive)}</span>
                   </div>
                 </CardContent>
               </Card>
@@ -408,16 +543,14 @@ export default function SummaryView({
               <Card>
                 <CardHeader className="pb-2">
                   <CardTitle className="text-lg text-red-600 flex items-center">
-                    <ArrowUp className="h-4 w-4 mr-2" /> Đang nợ
+                    <ArrowUp className="h-4 w-4 mr-2" /> Đang nợ (chưa thanh toán)
                   </CardTitle>
-                  <CardDescription>Những người đang nợ tiền</CardDescription>
+                  <CardDescription>Những người đang nợ tiền (chưa thanh toán)</CardDescription>
                 </CardHeader>
                 <CardContent>
                   <ScrollArea className="h-[200px]">
                     {Object.keys(negativeBalances).length === 0 ? (
-                      <p className="text-sm text-muted-foreground text-center py-4">
-                        Không có khoản nợ
-                      </p>
+                      <p className="text-sm text-muted-foreground text-center py-4">Không có khoản nợ</p>
                     ) : (
                       <div className="space-y-2">
                         {Object.entries(negativeBalances)
@@ -427,21 +560,15 @@ export default function SummaryView({
                               key={id}
                               className="flex items-center justify-between p-2 rounded-md hover:bg-muted cursor-pointer"
                               onClick={() => {
-                                setSelectedRoommate(id);
-                                setFilterType('debts');
+                                setSelectedRoommate(id)
+                                setFilterType("debts")
                               }}
                             >
                               <div className="flex flex-col">
-                                <span className="font-medium">
-                                  {getRoommateName(id)}
-                                </span>
-                                <span className="text-xs text-muted-foreground">
-                                  {getRoommateRoom(id)}
-                                </span>
+                                <span className="font-medium">{getRoommateName(id)}</span>
+                                <span className="text-xs text-muted-foreground">{getRoommateRoom(id)}</span>
                               </div>
-                              <span className="font-semibold text-red-600">
-                                {formatCurrency(balance)}
-                              </span>
+                              <span className="font-semibold text-red-600">{formatCurrency(balance)}</span>
                             </div>
                           ))}
                       </div>
@@ -449,9 +576,7 @@ export default function SummaryView({
                   </ScrollArea>
                   <div className="mt-4 pt-2 border-t flex justify-between items-center">
                     <span className="text-sm font-medium">Tổng cộng:</span>
-                    <span className="font-bold text-red-600">
-                      {formatCurrency(totalNegative)}
-                    </span>
+                    <span className="font-bold text-red-600">{formatCurrency(totalNegative)}</span>
                   </div>
                 </CardContent>
               </Card>
@@ -461,33 +586,24 @@ export default function SummaryView({
           <TabsContent value="details">
             {!selectedRoommate ? (
               <div className="text-center py-8">
-                <p className="text-muted-foreground mb-4">
-                  Chọn một thành viên để xem chi tiết khoản nợ
-                </p>
+                <p className="text-muted-foreground mb-4">Chọn một thành viên để xem chi tiết khoản nợ</p>
                 <DropdownMenu>
                   <DropdownMenuTrigger asChild>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      disabled={!roommates.length}
-                      className="whitespace-nowrap"
-                    >
+                    <Button variant="outline" size="sm" disabled={!roommates.length} className="whitespace-nowrap">
                       <Filter className="h-4 w-4 mr-2" /> Chọn thành viên
                     </Button>
                   </DropdownMenuTrigger>
                   <DropdownMenuContent className="w-56">
                     <div className="p-2">
                       <div className="mb-2">
-                        <p className="text-sm font-medium mb-1">
-                          Lọc theo thành viên:
-                        </p>
+                        <p className="text-sm font-medium mb-1">Lọc theo thành viên:</p>
                         <select
                           className="w-full text-sm border rounded px-2 py-1"
-                          value={selectedRoommate || ''}
+                          value={selectedRoommate || ""}
                           onChange={(e) => {
-                            setSelectedRoommate(e.target.value || null);
+                            setSelectedRoommate(e.target.value || null)
                             if (e.target.value && !filterType) {
-                              setFilterType('debts');
+                              setFilterType("debts")
                             }
                           }}
                         >
@@ -502,27 +618,21 @@ export default function SummaryView({
 
                       {selectedRoommate && (
                         <div className="mb-2">
-                          <p className="text-sm font-medium mb-1">
-                            Loại khoản:
-                          </p>
+                          <p className="text-sm font-medium mb-1">Loại khoản:</p>
                           <div className="flex space-x-2">
                             <Button
                               size="sm"
-                              variant={
-                                filterType === 'debts' ? 'default' : 'outline'
-                              }
+                              variant={filterType === "debts" ? "default" : "outline"}
                               className="flex-1"
-                              onClick={() => setFilterType('debts')}
+                              onClick={() => setFilterType("debts")}
                             >
                               Khoản nợ
                             </Button>
                             <Button
                               size="sm"
-                              variant={
-                                filterType === 'credits' ? 'default' : 'outline'
-                              }
+                              variant={filterType === "credits" ? "default" : "outline"}
                               className="flex-1"
-                              onClick={() => setFilterType('credits')}
+                              onClick={() => setFilterType("credits")}
                             >
                               Khoản được nợ
                             </Button>
@@ -546,7 +656,7 @@ export default function SummaryView({
             ) : detailedDebts.length === 0 ? (
               <div className="text-center py-8">
                 <p className="text-muted-foreground">
-                  {filterType === 'debts'
+                  {filterType === "debts"
                     ? `${getRoommateName(selectedRoommate)} không nợ ai cả`
                     : `Không ai nợ ${getRoommateName(selectedRoommate)} cả`}
                 </p>
@@ -555,19 +665,17 @@ export default function SummaryView({
               <div className="space-y-4">
                 <div className="bg-muted p-3 rounded-md">
                   <h3 className="font-medium mb-1">
-                    {filterType === 'debts'
+                    {filterType === "debts"
                       ? `${getRoommateName(selectedRoommate)} đang nợ:`
-                      : `Những người đang nợ ${getRoommateName(
-                          selectedRoommate
-                        )}:`}
+                      : `Những người đang nợ ${getRoommateName(selectedRoommate)}:`}
                   </h3>
                 </div>
 
                 <ScrollArea className="h-[400px] pr-4">
                   <div className="space-y-4">
                     {detailedDebts.map((debt, index) => {
-                      const debtId = `${debt.from}-${debt.to}-${index}`;
-                      const isExpanded = expandedExpenses[debtId] || false;
+                      const debtId = `${debt.from}-${debt.to}-${index}`
+                      const isExpanded = expandedExpenses[debtId] || false
 
                       return (
                         <Card key={debtId} className="overflow-hidden">
@@ -577,7 +685,7 @@ export default function SummaryView({
                           >
                             <div className="flex items-center">
                               <div className="mr-3">
-                                {filterType === 'debts' ? (
+                                {filterType === "debts" ? (
                                   <ArrowRight className="h-5 w-5 text-amber-500" />
                                 ) : (
                                   <ArrowLeft className="h-5 w-5 text-green-500" />
@@ -585,34 +693,22 @@ export default function SummaryView({
                               </div>
                               <div>
                                 <p className="font-medium">
-                                  {filterType === 'debts'
-                                    ? getRoommateName(debt.to)
-                                    : getRoommateName(debt.from)}
+                                  {filterType === "debts" ? getRoommateName(debt.to) : getRoommateName(debt.from)}
                                 </p>
                                 <p className="text-xs text-muted-foreground">
-                                  {filterType === 'debts'
-                                    ? getRoommateRoom(debt.to)
-                                    : getRoommateRoom(debt.from)}
+                                  {filterType === "debts" ? getRoommateRoom(debt.to) : getRoommateRoom(debt.from)}
                                 </p>
                               </div>
                             </div>
                             <div className="text-right">
-                              <p className="font-bold">
-                                {formatCurrency(
-                                  Math.ceil(debt.amount / 1000) * 1000
-                                )}
-                              </p>
-                              <p className="text-xs text-muted-foreground">
-                                {debt.details.length} khoản chi tiêu
-                              </p>
+                              <p className="font-bold">{formatCurrency(Math.ceil(debt.amount / 1000) * 1000)}</p>
+                              <p className="text-xs text-muted-foreground">{debt.details.length} khoản chi tiêu</p>
                             </div>
                           </div>
 
                           {isExpanded && (
                             <div className="px-4 pb-4 pt-2 border-t">
-                              <p className="text-sm font-medium mb-2">
-                                Chi tiết các khoản:
-                              </p>
+                              <p className="text-sm font-medium mb-2">Chi tiết các khoản:</p>
                               <div className="space-y-2">
                                 {debt.details
                                   .sort((a, b) => b.amount - a.amount)
@@ -622,33 +718,43 @@ export default function SummaryView({
                                       className="flex justify-between items-center p-2 rounded-md bg-muted/50"
                                     >
                                       <div className="flex-1">
-                                        <p className="font-medium">
-                                          {detail.description}
-                                        </p>
-                                        <p className="text-xs text-muted-foreground">
-                                          {new Date(
-                                            detail.date
-                                          ).toLocaleDateString('vi-VN')}
-                                          {detail.multiplier && (
-                                            <Badge
-                                              variant="secondary"
-                                              className="ml-2"
-                                            >
-                                              x{detail.multiplier}
-                                            </Badge>
-                                          )}
-                                        </p>
+                                        <div className="flex items-center justify-between">
+                                          <div>
+                                            <p className="font-medium">{detail.description}</p>
+                                            <p className="text-xs text-muted-foreground">
+                                              {new Date(detail.date).toLocaleDateString("vi-VN")}
+                                              {detail.multiplier && (
+                                                <Badge variant="secondary" className="ml-2">
+                                                  x{detail.multiplier}
+                                                </Badge>
+                                              )}
+                                            </p>
+                                          </div>
+                                          <div className="flex items-center gap-2">
+                                            <p className="font-semibold">{formatCurrency(detail.amount)}</p>
+                                            <Checkbox
+                                              checked={false} // Luôn false vì chỉ hiển thị khoản chưa thanh toán
+                                              onCheckedChange={(checked) => {
+                                                updatePaymentStatus(
+                                                  debt.from,
+                                                  debt.to,
+                                                  detail.amount,
+                                                  checked as boolean,
+                                                  detail.expenseId,
+                                                )
+                                              }}
+                                              disabled={isLoading}
+                                            />
+                                          </div>
+                                        </div>
                                       </div>
-                                      <p className="font-semibold">
-                                        {formatCurrency(detail.amount)}
-                                      </p>
                                     </div>
                                   ))}
                               </div>
                             </div>
                           )}
                         </Card>
-                      );
+                      )
                     })}
                   </div>
                 </ScrollArea>
@@ -659,22 +765,27 @@ export default function SummaryView({
             <DebtListView
               roommates={roommates}
               expenses={expenses}
-              balances={balances}
+              balances={positiveBalances}
               qrCodes={qrCodes}
+              paymentStatuses={paymentStatuses}
+              onUpdatePaymentStatus={updatePaymentStatus}
+              isLoading={isLoading}
             />
           </TabsContent>
         </Tabs>
       </CardContent>
     </Card>
-  );
+  )
 }
 
 interface DebtListViewProps {
-  roommates: Roommate[];
-  expenses: Expense[];
-  balances: Record<string, number>;
-  qrCodes?: Record<string, RoommateQRCode[]>;
-  onScreenshotCapture?: (dataUrl: string) => void;
+  roommates: Roommate[]
+  expenses: Expense[]
+  balances: Record<string, number>
+  qrCodes?: Record<string, RoommateQRCode[]>
+  paymentStatuses: Record<string, boolean>
+  onUpdatePaymentStatus: (from: string, to: string, amount: number, isPaid: boolean, expenseId?: string) => void
+  isLoading: boolean
 }
 
 function DebtListView({
@@ -682,79 +793,87 @@ function DebtListView({
   expenses,
   balances,
   qrCodes,
-  onScreenshotCapture,
+  paymentStatuses,
+  onUpdatePaymentStatus,
+  isLoading,
 }: DebtListViewProps) {
-  const [selectedCreditor, setSelectedCreditor] = useState<string | null>(null);
-  const [showShareOptions, setShowShareOptions] = useState(false);
-  const [showQRCode, setShowQRCode] = useState(false);
-  const [showQRCode2, setShowQRCode2] = useState(false);
-  const qrCodeRef = useRef<HTMLDivElement>(null);
-  const [amount, setAmount] = useState(0);
+  const [selectedCreditor, setSelectedCreditor] = useState<string | null>(null)
+  const [showShareOptions, setShowShareOptions] = useState(false)
+  const [showQRCode, setShowQRCode] = useState(false)
+  const [showQRCode2, setShowQRCode2] = useState(false)
+  const qrCodeRef = useRef<HTMLDivElement>(null)
+  const [amount, setAmount] = useState(0)
+
+  // Tạo ID duy nhất cho mỗi giao dịch
+  const getTransactionId = (from: string, to: string, expenseId?: string) => {
+    return expenseId ? `${from}-${to}-${expenseId}` : `${from}-${to}`
+  }
 
   // Lấy tên thành viên theo ID
   const getRoommateName = (id: string) => {
-    const roommate = roommates.find((r) => r.id === id);
-    return roommate ? roommate.name : 'Không xác định';
-  };
+    const roommate = roommates.find((r) => r.id === id)
+    return roommate ? roommate.name : "Không xác định"
+  }
 
   // Lấy phòng của thành viên theo ID
   const getRoommateRoom = (id: string) => {
-    const roommate = roommates.find((r) => r.id === id);
-    return roommate ? roommate.room : '';
-  };
+    const roommate = roommates.find((r) => r.id === id)
+    return roommate ? roommate.room : ""
+  }
 
   // Lọc những người có số dư dương (được nợ)
   const creditors = useMemo(() => {
-    return roommates
-      .filter((roommate) => balances[roommate.id] > 0)
-      .sort((a, b) => balances[b.id] - balances[a.id]);
-  }, [roommates, balances]);
+    return roommates.filter((roommate) => balances[roommate.id] > 0).sort((a, b) => balances[b.id] - balances[a.id])
+  }, [roommates, balances])
 
   // Tạo danh sách chi tiết khoản nợ cho người được chọn
   const debtorsList = useMemo(() => {
-    if (!selectedCreditor) return [];
+    if (!selectedCreditor) return []
 
     const result: {
-      debtorId: string;
-      amount: number;
+      debtorId: string
+      amount: number
       details: {
-        description: string;
-        amount: number;
-        date: Date;
-        multiplier?: number;
-      }[];
-    }[] = [];
+        description: string
+        amount: number
+        date: Date
+        multiplier?: number
+        expenseId: string
+        isPaid: boolean
+      }[]
+    }[] = []
 
     // Lọc các chi phí liên quan đến người được chọn
     expenses.forEach((expense) => {
-      const paidBy = expense.paidBy;
-      const sharedWith = expense.sharedWith;
-      const multipliers = expense.shareMultipliers || {};
+      const paidBy = expense.paidBy
+      const sharedWith = expense.sharedWith
+      const multipliers = expense.shareMultipliers || {}
 
       // Bỏ qua nếu không có ai chia sẻ
-      if (sharedWith.length === 0) return;
+      if (sharedWith.length === 0) return
 
       // Chỉ xử lý khi người được chọn là người trả tiền
       if (paidBy === selectedCreditor) {
         // Tính tổng hệ số
-        let totalMultiplier = 0;
+        let totalMultiplier = 0
         sharedWith.forEach((roommateId) => {
-          totalMultiplier += multipliers[roommateId] || 1;
-        });
+          totalMultiplier += multipliers[roommateId] || 1
+        })
 
         sharedWith.forEach((roommateId) => {
           // Bỏ qua nếu người chia sẻ cũng là người trả tiền
-          if (roommateId === paidBy) return;
+          if (roommateId === paidBy) return
 
-          const roommateMultiplier = multipliers[roommateId] || 1;
-          const amountForRoommate = Math.round(
-            (expense.amount * roommateMultiplier) / totalMultiplier
-          );
+          const roommateMultiplier = multipliers[roommateId] || 1
+          const amountForRoommate = Math.round((expense.amount * roommateMultiplier) / totalMultiplier)
+          const transactionId = getTransactionId(roommateId, paidBy, expense.id)
+          const isPaid = paymentStatuses[transactionId] || false
+
+          // Chỉ hiển thị những khoản chưa thanh toán
+          if (isPaid) return
 
           // Tìm khoản nợ hiện có hoặc tạo mới
-          const debtorIndex = result.findIndex(
-            (debtor) => debtor.debtorId === roommateId
-          );
+          const debtorIndex = result.findIndex((debtor) => debtor.debtorId === roommateId)
           if (debtorIndex === -1) {
             result.push({
               debtorId: roommateId,
@@ -764,51 +883,40 @@ function DebtListView({
                   description: expense.description,
                   amount: amountForRoommate,
                   date: expense.date,
-                  multiplier:
-                    roommateMultiplier > 1 ? roommateMultiplier : undefined,
+                  multiplier: roommateMultiplier > 1 ? roommateMultiplier : undefined,
+                  expenseId: expense.id,
+                  isPaid,
                 },
               ],
-            });
+            })
           } else {
-            result[debtorIndex].amount += amountForRoommate;
+            result[debtorIndex].amount += amountForRoommate
             result[debtorIndex].details.push({
               description: expense.description,
               amount: amountForRoommate,
               date: expense.date,
-              multiplier:
-                roommateMultiplier > 1 ? roommateMultiplier : undefined,
-            });
+              multiplier: roommateMultiplier > 1 ? roommateMultiplier : undefined,
+              expenseId: expense.id,
+              isPaid,
+            })
           }
-        });
+        })
       }
-    });
+    })
 
     // Sắp xếp theo số tiền giảm dần
-    return result.sort((a, b) => b.amount - a.amount);
-  }, [selectedCreditor, expenses]);
+    return result.sort((a, b) => b.amount - a.amount)
+  }, [selectedCreditor, expenses, paymentStatuses])
 
   // Tính tổng số tiền nợ
   const totalDebt = useMemo(() => {
-    return debtorsList.reduce((sum, debtor) => sum + debtor.amount, 0);
-  }, [debtorsList]);
+    return debtorsList.reduce((sum, debtor) => sum + debtor.amount, 0)
+  }, [debtorsList])
 
   // Xử lý chia sẻ danh sách nợ
   const handleShare = () => {
-    // Tạo nội dung để chia sẻ
-    const text =
-      `Danh sách khoản nợ của ${getRoommateName(selectedCreditor!)}\n\n` +
-      debtorsList
-        .map(
-          (debtor) =>
-            `${getRoommateName(debtor.debtorId)}: ${formatCurrency(
-              Math.ceil(debtor.amount / 1000) * 1000
-            )}`
-        )
-        .join('\n') +
-      `\n\nTổng cộng: ${formatCurrency(totalDebt)}`;
-
-    setShowShareOptions(true);
-  };
+    setShowShareOptions(true)
+  }
 
   // Xử lý sao chép danh sách nợ
   const handleCopy = () => {
@@ -816,141 +924,129 @@ function DebtListView({
       `Danh sách khoản nợ của ${getRoommateName(selectedCreditor!)}\n\n` +
       debtorsList
         .map(
-          (debtor) =>
-            `${getRoommateName(debtor.debtorId)}: ${formatCurrency(
-              Math.ceil(debtor.amount / 1000) * 1000
-            )}`
+          (debtor) => `${getRoommateName(debtor.debtorId)}: ${formatCurrency(Math.ceil(debtor.amount / 1000) * 1000)}`,
         )
-        .join('\n') +
-      `\n\nTổng cộng: ${formatCurrency(totalDebt)}`;
+        .join("\n") +
+      `\n\nTổng cộng: ${formatCurrency(totalDebt)}`
 
     navigator.clipboard
       .writeText(text)
       .then(() => {
-        alert('Đã sao chép danh sách nợ vào clipboard');
-        setShowShareOptions(false);
+        alert("Đã sao chép danh sách nợ vào clipboard")
+        setShowShareOptions(false)
       })
       .catch((err) => {
-        console.error('Lỗi khi sao chép:', err);
-      });
-  };
+        console.error("Lỗi khi sao chép:", err)
+      })
+  }
 
   // Hiển thị QR code
   const handleShowQRCode = () => {
-    setShowQRCode(true);
-  };
+    setShowQRCode(true)
+  }
 
   const handleShowQRCode2 = (amount: number) => {
-    setShowQRCode2(true);
-    setAmount(amount);
-  };
+    setShowQRCode2(true)
+    setAmount(amount)
+  }
 
   // Tải xuống QR code
   const handleDownloadQRCode = () => {
-    if (!qrCodeRef.current) return;
+    if (!qrCodeRef.current) return
 
     try {
-      const imgElement = qrCodeRef.current.querySelector('img');
+      const imgElement = qrCodeRef.current.querySelector("img")
       if (imgElement) {
         // Nếu là hình ảnh có sẵn
-        const canvas = document.createElement('canvas');
-        const ctx = canvas.getContext('2d');
+        const canvas = document.createElement("canvas")
+        const ctx = canvas.getContext("2d")
 
-        canvas.width = imgElement.naturalWidth || 250;
-        canvas.height = imgElement.naturalHeight || 250;
+        canvas.width = imgElement.naturalWidth || 250
+        canvas.height = imgElement.naturalHeight || 250
 
-        ctx?.drawImage(imgElement, 0, 0, canvas.width, canvas.height);
+        ctx?.drawImage(imgElement, 0, 0, canvas.width, canvas.height)
 
-        const pngUrl = canvas.toDataURL('image/png');
-        const downloadLink = document.createElement('a');
-        downloadLink.href = pngUrl;
-        downloadLink.download = `qrcode_${getRoommateName(
-          selectedCreditor!
-        )}.png`;
-        document.body.appendChild(downloadLink);
-        downloadLink.click();
-        document.body.removeChild(downloadLink);
-        return;
+        const pngUrl = canvas.toDataURL("image/png")
+        const downloadLink = document.createElement("a")
+        downloadLink.href = pngUrl
+        downloadLink.download = `qrcode_${getRoommateName(selectedCreditor!)}.png`
+        document.body.appendChild(downloadLink)
+        downloadLink.click()
+        document.body.removeChild(downloadLink)
+        return
       }
 
-      const svgElement = qrCodeRef.current.querySelector('svg');
-      if (!svgElement) return;
+      const svgElement = qrCodeRef.current.querySelector("svg")
+      if (!svgElement) return
 
-      const svgData = new XMLSerializer().serializeToString(svgElement);
-      const canvas = document.createElement('canvas');
-      const ctx = canvas.getContext('2d');
+      const svgData = new XMLSerializer().serializeToString(svgElement)
+      const canvas = document.createElement("canvas")
+      const ctx = canvas.getContext("2d")
 
       // Tạo một Image object để vẽ SVG lên canvas
-      const img = new Image();
+      const img = new Image()
       img.onload = () => {
-        canvas.width = img.width;
-        canvas.height = img.height;
-        ctx?.drawImage(img, 0, 0);
+        canvas.width = img.width
+        canvas.height = img.height
+        ctx?.drawImage(img, 0, 0)
 
         // Chuyển canvas thành URL và tạo link tải xuống
-        const pngUrl = canvas.toDataURL('image/png');
-        const downloadLink = document.createElement('a');
-        downloadLink.href = pngUrl;
-        downloadLink.download = `qrcode_${getRoommateName(
-          selectedCreditor!
-        )}.png`;
-        document.body.appendChild(downloadLink);
-        downloadLink.click();
-        document.body.removeChild(downloadLink);
-      };
+        const pngUrl = canvas.toDataURL("image/png")
+        const downloadLink = document.createElement("a")
+        downloadLink.href = pngUrl
+        downloadLink.download = `qrcode_${getRoommateName(selectedCreditor!)}.png`
+        document.body.appendChild(downloadLink)
+        downloadLink.click()
+        document.body.removeChild(downloadLink)
+      }
 
       // Chuyển SVG thành data URL
-      img.src =
-        'data:image/svg+xml;base64,' +
-        btoa(unescape(encodeURIComponent(svgData)));
+      img.src = "data:image/svg+xml;base64," + btoa(unescape(encodeURIComponent(svgData)))
     } catch (error) {
-      console.error('Lỗi khi tải xuống QR code:', error);
-      alert('Có lỗi xảy ra khi tải xuống QR code');
+      console.error("Lỗi khi tải xuống QR code:", error)
+      alert("Có lỗi xảy ra khi tải xuống QR code")
     }
-  };
+  }
 
   // Kiểm tra xem người dùng có QR code không
   const hasQRCode = (roommateId: string) => {
-    return qrCodes && qrCodes[roommateId] && qrCodes[roommateId].length > 0;
-  };
+    return qrCodes && qrCodes[roommateId] && qrCodes[roommateId].length > 0
+  }
 
   // Lấy QR code URL của người dùng
   const getQRCodeURL = (roommateId: string) => {
-    if (!qrCodes || !qrCodes[roommateId] || qrCodes[roommateId].length === 0)
-      return null;
+    if (!qrCodes || !qrCodes[roommateId] || qrCodes[roommateId].length === 0) return null
 
     // Ưu tiên QR code có hình ảnh
-    const qrWithImage = qrCodes[roommateId].find((qr) => qr.qr_image_url);
-    if (qrWithImage) return qrWithImage.qr_image_url;
+    const qrWithImage = qrCodes[roommateId].find((qr) => qr.qr_image_url)
+    if (qrWithImage) return qrWithImage.qr_image_url
 
-    return null;
-  };
+    return null
+  }
 
   if (creditors.length === 0) {
     return (
       <div className="text-center py-8">
         <p className="text-muted-foreground">Không có ai được nợ tiền</p>
       </div>
-    );
+    )
   }
 
   return (
     <div className="space-y-6">
       <div className="bg-muted p-4 rounded-md">
-        <h3 className="font-medium mb-2">Chọn người để xem danh sách nợ</h3>
+        <h3 className="font-medium mb-2">Chọn người để xem danh sách nợ (chưa thanh toán)</h3>
         <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
           {creditors.map((creditor) => (
             <Button
               key={creditor.id}
-              variant={selectedCreditor === creditor.id ? 'default' : 'outline'}
+              variant={selectedCreditor === creditor.id ? "default" : "outline"}
               className="justify-start"
               onClick={() => setSelectedCreditor(creditor.id)}
             >
               <div className="flex flex-col items-start">
                 <span>{creditor.name}</span>
-                <span className="text-xs text-muted-foreground">
-                  {formatCurrency(balances[creditor.id])}
-                </span>
+                <span className="text-xs text-muted-foreground">{formatCurrency(balances[creditor.id])}</span>
               </div>
             </Button>
           ))}
@@ -962,28 +1058,18 @@ function DebtListView({
           <CardHeader className="bg-primary text-primary-foreground pb-2">
             <div className="flex justify-between items-center">
               <div>
-                <CardTitle>Danh sách khoản nợ</CardTitle>
+                <CardTitle>Danh sách khoản nợ chưa thanh toán</CardTitle>
                 <CardDescription className="text-primary-foreground/80">
                   Những người đang nợ {getRoommateName(selectedCreditor)}
                 </CardDescription>
               </div>
               <div className="flex gap-2">
                 {hasQRCode(selectedCreditor) && (
-                  <Button
-                    variant="secondary"
-                    size="sm"
-                    onClick={handleShowQRCode}
-                    className="whitespace-nowrap"
-                  >
+                  <Button variant="secondary" size="sm" onClick={handleShowQRCode} className="whitespace-nowrap">
                     <QrCode className="h-4 w-4 mr-2" /> QR Code
                   </Button>
                 )}
-                <Button
-                  variant="secondary"
-                  size="sm"
-                  onClick={handleShare}
-                  className="whitespace-nowrap"
-                >
+                <Button variant="secondary" size="sm" onClick={handleShare} className="whitespace-nowrap">
                   <Share2 className="h-4 w-4 mr-2" /> Chia sẻ
                 </Button>
               </div>
@@ -994,46 +1080,57 @@ function DebtListView({
               <div className="flex justify-between items-center">
                 <span className="font-medium">Người nợ</span>
                 <span className="font-medium">Số tiền</span>
+                <span className="font-medium">Đánh dấu thanh toán</span>
               </div>
             </div>
             <div className="max-h-[400px] overflow-auto">
               <div className="divide-y">
                 {debtorsList.length === 0 ? (
                   <div className="p-4 text-center text-muted-foreground">
-                    Không có ai nợ {getRoommateName(selectedCreditor)}
+                    Không có ai nợ {getRoommateName(selectedCreditor)} (tất cả đã thanh toán)
                   </div>
                 ) : (
                   debtorsList.map((debtor) => (
-                    <div
-                      key={debtor.debtorId}
-                      className="p-4 hover:bg-muted/50"
-                    >
+                    <div key={debtor.debtorId} className="p-4 hover:bg-muted/50">
                       <div className="flex justify-between items-center">
                         <div>
-                          <div className="font-medium">
-                            {getRoommateName(debtor.debtorId)}
-                          </div>
-                          <div className="text-xs text-muted-foreground">
-                            {getRoommateRoom(debtor.debtorId)}
-                          </div>
+                          <div className="font-medium">{getRoommateName(debtor.debtorId)}</div>
+                          <div className="text-xs text-muted-foreground">{getRoommateRoom(debtor.debtorId)}</div>
                           <div className="text-xs text-muted-foreground mt-1">
-                            {debtor.details.length} khoản chi tiêu
+                            {debtor.details.length} khoản chi tiêu chưa thanh toán
                           </div>
                         </div>
-                        <div className="flex flex-col items-end">
-                          <div className="text-right font-bold">
-                            {formatCurrency(
-                              Math.ceil(debtor.amount / 1000) * 1000
-                            )}
+                        <div className="flex items-center gap-4">
+                          <div className="text-right">
+                            <div className="font-bold">{formatCurrency(Math.ceil(debtor.amount / 1000) * 1000)}</div>
+                            <div
+                              className="flex items-center text-sm text-muted-foreground cursor-pointer hover:text-primary"
+                              onClick={() => {
+                                handleShowQRCode2(debtor.amount)
+                              }}
+                            >
+                              <QrCode className="h-4 w-4 mr-2" /> QR Code
+                            </div>
                           </div>
-                          <div
-                            className="flex items-center text-sm text-muted-foreground cursor-pointer hover:text-primary"
+                          <Button
+                            size="sm"
                             onClick={() => {
-                              handleShowQRCode2(debtor.amount);
+                              // Đánh dấu tất cả các khoản nợ của người này là đã thanh toán
+                              debtor.details.forEach((detail) => {
+                                onUpdatePaymentStatus(
+                                  debtor.debtorId,
+                                  selectedCreditor,
+                                  detail.amount,
+                                  true,
+                                  detail.expenseId,
+                                )
+                              })
                             }}
+                            disabled={isLoading}
                           >
-                            <QrCode className="h-4 w-4 mr-2" /> QR Code
-                          </div>
+                            <Check className="h-4 w-4 mr-2" />
+                            Đã thanh toán
+                          </Button>
                         </div>
                       </div>
                     </div>
@@ -1044,9 +1141,7 @@ function DebtListView({
             <div className="p-4 bg-primary/5 border-t">
               <div className="flex justify-between items-center">
                 <span className="font-medium">Tổng cộng</span>
-                <span className="font-bold text-lg">
-                  {formatCurrency(Math.ceil(totalDebt / 1000) * 1000)}
-                </span>
+                <span className="font-bold text-lg">{formatCurrency(Math.ceil(totalDebt / 1000) * 1000)}</span>
               </div>
             </div>
           </CardContent>
@@ -1058,9 +1153,7 @@ function DebtListView({
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
             <DialogTitle>Chia sẻ danh sách nợ</DialogTitle>
-            <DialogDescription>
-              Chọn cách bạn muốn chia sẻ danh sách nợ
-            </DialogDescription>
+            <DialogDescription>Chọn cách bạn muốn chia sẻ danh sách nợ</DialogDescription>
           </DialogHeader>
           <div className="grid gap-4 py-4">
             <Button onClick={handleCopy} className="w-full">
@@ -1069,11 +1162,11 @@ function DebtListView({
             <Button
               variant="outline"
               onClick={() => {
-                const element = document.getElementById('debt-list-card');
+                const element = document.getElementById("debt-list-card")
                 if (element) {
-                  alert('Chụp màn hình phần danh sách nợ để chia sẻ');
+                  alert("Chụp màn hình phần danh sách nợ để chia sẻ")
                 }
-                setShowShareOptions(false);
+                setShowShareOptions(false)
               }}
               className="w-full"
             >
@@ -1087,24 +1180,20 @@ function DebtListView({
       <Dialog
         open={showQRCode || showQRCode2}
         onOpenChange={(isOpen) => {
-          setShowQRCode(isOpen);
-          setShowQRCode2(isOpen);
+          setShowQRCode(isOpen)
+          setShowQRCode2(isOpen)
         }}
       >
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
-            <DialogTitle>
-              QR Code của {getRoommateName(selectedCreditor!)}
-            </DialogTitle>
-            <DialogDescription>
-              Quét mã QR này để xem thông tin khoản nợ
-            </DialogDescription>
+            <DialogTitle>QR Code của {getRoommateName(selectedCreditor!)}</DialogTitle>
+            <DialogDescription>Quét mã QR này để xem thông tin khoản nợ</DialogDescription>
           </DialogHeader>
           <div className="flex flex-col items-center justify-center py-4">
             <div ref={qrCodeRef} className="bg-white p-4 rounded-lg">
               {hasQRCode(selectedCreditor!) ? (
                 <img
-                  src={getQRCodeURL(selectedCreditor!) || '/placeholder.svg'}
+                  src={getQRCodeURL(selectedCreditor!) || "/placeholder.svg"}
                   alt={`QR code for ${getRoommateName(selectedCreditor!)}`}
                   className="w-[350px] h-[350px] object-contain cursor-pointer"
                 />
@@ -1116,10 +1205,7 @@ function DebtListView({
             </div>
             <div className="mt-4 text-center">
               <p className="font-medium">
-                Tổng nợ:{' '}
-                {showQRCode2
-                  ? formatCurrency(Math.ceil(amount / 1000) * 1000)
-                  : formatCurrency(totalDebt)}
+                Tổng nợ: {showQRCode2 ? formatCurrency(Math.ceil(amount / 1000) * 1000) : formatCurrency(totalDebt)}
               </p>
             </div>
           </div>
@@ -1131,7 +1217,7 @@ function DebtListView({
         </DialogContent>
       </Dialog>
     </div>
-  );
+  )
 }
 
 // Thêm component ArrowLeft
@@ -1152,5 +1238,5 @@ function ArrowLeft(props: React.SVGProps<SVGSVGElement>) {
       <path d="m12 19-7-7 7-7" />
       <path d="M19 12H5" />
     </svg>
-  );
+  )
 }
